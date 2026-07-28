@@ -39,6 +39,9 @@ export const chatApi = {
     form.append('audio', wav, 'record.wav')
     return postSse(`/chats/${contactId}/messages`, form, onEvent)
   },
+  /** 接口 18：清空聊天记录 */
+  clearMessages: (contactId: string) =>
+    http.delete<{ removed: number }>(`/chats/${contactId}/messages`),
 }
 
 // ---------- 语音（看图讲故事评分，仍走 mock） ----------

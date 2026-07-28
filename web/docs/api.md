@@ -1,6 +1,6 @@
 # 后端接口文档（API 契约）
 
-> 本文档描述前端（`web/`）依赖的全部后端接口，共 **17 个**。
+> 本文档描述前端（`web/`）依赖的全部后端接口，共 **18 个**。
 > 当前由 Vite dev 中间件模拟实现（`web/mock/plugin.ts` + `web/mock/data.ts`），真实后端按此契约实现即可无缝替换。
 > 前端调用封装见 `web/src/api/index.ts`，类型定义见 `web/src/types/index.ts`。
 
@@ -25,6 +25,7 @@
 | 15 | PUT | `/api/pic-story-progress` | 讲述成绩保存 | 看图讲故事 |
 | 16 | POST | `/api/assist/translate` | 辅助卡片翻译生成（SSE 流式） | 聊天页 / 看图讲故事 |
 | 17 | POST | `/api/assist/verify` | 辅助卡片复读语义校验 | 聊天页 / 看图讲故事 |
+| 18 | DELETE | `/api/chats/{contactId}/messages` | 清空聊天记录 | 聊天页 |
 
 ## 通用约定
 
@@ -447,6 +448,36 @@ data: {}
 **前端消费约定**：发送时我方气泡立即以“原声语音条 + 转换中”占位上屏；`reply_*` 驱动对方气泡流式上屏（阶段A 先完成），音频分片 base64 解码后按 `seq` 拼流播放；`user_*` 驱动我方气泡逐步回填双语文本与英文合成音（阶段B 后完成）；`error` 时清理占位气泡并提示。
 
 > 实现状态：5b 为接口标准，面向真实后端实现；当前 mock 层（`web/mock/plugin.ts`）与前端尚未实现，待标准确认后另行安排。
+
+### 18. 清空聊天记录
+
+`DELETE /api/chats/{contactId}/messages`
+
+删除该会话的全部消息、关联音频记录（audio_assets）及对应物理音频文件（`msg_*_raw.*` / `msg_*_tts.wav`）。
+
+**路径参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| contactId | string | 联系人 ID，不存在返回 `404` |
+
+**错误**：同一会话存在进行中的 5b 语音流时返回 `409`（与 5b 共用会话锁，避免清空过程中产生孤儿文件）。
+
+**响应 `data` 字段**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| removed | number | 实际删除的消息条数（会话本就为空时为 `0`，不报错） |
+
+**Demo**
+
+```bash
+curl -X DELETE http://localhost:5173/api/chats/dad/messages
+```
+
+```json
+{ "code": 0, "data": { "removed": 24 }, "message": "ok" }
+```
 
 ---
 

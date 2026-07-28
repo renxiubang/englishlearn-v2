@@ -319,11 +319,29 @@ function onFavorite(payload: { en: string; zh: string; faved: boolean }) {
 // ---------- 菜单 / 附加功能面板 ----------
 const menuOpen = ref(false)
 const plusOpen = ref(false)
+const clearing = ref(false)
 
-function clearHistory() {
-  messages.value = []
-  menuOpen.value = false
-  toast('聊天记录已清空')
+/** 接口 18：清空聊天记录（后端删除消息/音频后再清本地态） */
+async function clearHistory() {
+  if (clearing.value) return
+  if (sending.value) {
+    toast('AI 正在回复中，请稍候')
+    return
+  }
+  clearing.value = true
+  try {
+    await chatApi.clearMessages(contactId.value)
+    player.stop()
+    messages.value = []
+    hasMore.value = false
+    nextCursor = null
+    menuOpen.value = false
+    toast('聊天记录已清空')
+  } catch (e) {
+    toast(e instanceof Error ? e.message : '清空失败')
+  } finally {
+    clearing.value = false
+  }
 }
 
 function plusAction(name: string) {
@@ -451,8 +469,8 @@ function plusAction(name: string) {
           <div class="text-[11px] muted mt-0.5">{{ contact?.sub }}</div>
         </div>
       </div>
-      <button class="sheet-option--danger w-full flex items-center gap-3 p-3 rounded-2xl" @click="clearHistory">
-        <span class="label text-[14px] font-semibold">清空聊天记录</span>
+      <button class="sheet-option--danger w-full flex items-center gap-3 p-3 rounded-2xl" :disabled="clearing" @click="clearHistory">
+        <span class="label text-[14px] font-semibold">{{ clearing ? '正在清空…' : '清空聊天记录' }}</span>
       </button>
     </ActionSheet>
 

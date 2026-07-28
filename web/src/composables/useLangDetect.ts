@@ -1,7 +1,12 @@
 // ECAPA-TDNN 语种判断（浏览器端 ONNX 推理）：输入 16kHz Float32，输出中/英。
 // 决定"按住说话"走接口 5b（英文对话）还是接口 16（中文翻译辅助）。
 // 模型来自 ai-v2：public/models/ecapa_lang_id_int8.onnx（107 类，取 zh=106 / en=20）。
-import * as ort from 'onnxruntime-web'
+// 用 wasm-only 入口：默认入口是含 WebGPU/JSEP 的 bundle，会请求 jsep 变体的 wasm 运行时
+import * as ort from 'onnxruntime-web/wasm'
+// wasm 运行时用 Vite ?url 从 npm 包引入：dev 下可被动态 import（public/ 静态文件不行，
+// Vite 会拦截 ?import 请求导致加载失败静默降级英文），build 时自动 emit 进产物
+import ortWasmMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url'
+import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url'
 import { toast } from '@/composables/useToast'
 
 const MODEL_PATH = '/models/ecapa_lang_id_int8.onnx'
@@ -9,9 +14,8 @@ const ZH_IDX = 106
 const EN_IDX = 20
 const MAX_SAMPLES = 32000 // 2s @ 16kHz
 
-// onnxruntime-web 的 wasm 运行时从 public/ort/ 加载（与 npm 包同版本拷入），
-// 避免 Vite 打包 wasm 资产的复杂配置与 CDN 版本漂移
-ort.env.wasm.wasmPaths = '/ort/'
+// 指定 wasm 运行时文件路径，避免 CDN 版本漂移
+ort.env.wasm.wasmPaths = { mjs: ortWasmMjsUrl, wasm: ortWasmUrl }
 ort.env.wasm.numThreads = 1
 
 let session: ort.InferenceSession | null = null

@@ -1,6 +1,6 @@
 """聊天数据访问：contacts / messages / audio_assets。"""
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import AudioAsset, Contact, Message
@@ -107,6 +107,37 @@ async def insert_audio_asset(
     db.add(asset)
     await db.flush()
     return asset
+
+
+async def delete_chat_history(
+    db: AsyncSession, user_id: str, contact_id: str
+) -> tuple[int, list[str]]:
+    """清空会话消息与关联音频记录（api.md 接口 18）。
+
+    返回 (删除消息数, 待删物理文件名列表)；audio_assets 无外键约束，
+    需先按 message_id 查出 path 再删行，文件由调用方在事务提交后删除。
+    """
+    ids = list(
+        (
+            await db.execute(
+                select(Message.id).where(
+                    Message.user_id == user_id, Message.contact_id == contact_id
+                )
+            )
+        ).scalars()
+    )
+    if not ids:
+        return 0, []
+    paths = list(
+        (
+            await db.execute(
+                select(AudioAsset.path).where(AudioAsset.message_id.in_(ids))
+            )
+        ).scalars()
+    )
+    await db.execute(delete(AudioAsset).where(AudioAsset.message_id.in_(ids)))
+    await db.execute(delete(Message).where(Message.id.in_(ids)))
+    return len(ids), paths
 
 
 def message_to_dict(m: Message) -> dict:

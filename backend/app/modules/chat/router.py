@@ -1,8 +1,9 @@
-"""聊天模块路由（api.md 接口 4 / 5a / 5b）。
+"""聊天模块路由（api.md 接口 4 / 5a / 5b / 18）。
 
 POST /api/chats/{contactId}/messages 按 Content-Type 分流：
 - application/json → 5a 文本同步
 - multipart/form-data → 5b 语音 SSE 流式
+DELETE /api/chats/{contactId}/messages → 18 清空聊天记录
 """
 
 import logging
@@ -151,3 +152,33 @@ async def send_message(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.delete("/chats/{contact_id}/messages")
+async def clear_messages(
+    contact_id: str,
+    db: AsyncSession = Depends(get_db),
+    speech: SpeechService = Depends(get_speech),
+    guard: SessionGuard = Depends(get_session_guard),
+):
+    """接口 18：清空会话聊天记录（消息 + 音频记录 + 物理文件）。"""
+    if not await repo.get_contact(db, contact_id):
+        raise not_found("contact not found")
+
+    # 与 5b 同一把会话锁：流进行中清空会产生孤儿文件/幽灵消息，直接 409
+    session_key = f"{DEFAULT_USER_ID}:{contact_id}"
+    if not guard.try_acquire(session_key):
+        raise conflict("another voice stream is in progress for this session")
+
+    try:
+        removed, paths = await repo.delete_chat_history(
+            db, DEFAULT_USER_ID, contact_id
+        )
+        await db.commit()
+    finally:
+        guard.release(session_key)
+
+    # 事务提交后再删物理文件，残留文件不影响数据正确性
+    for name in paths:
+        speech.path_of(name).unlink(missing_ok=True)
+    return ok({"removed": removed})
