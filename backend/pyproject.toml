@@ -1,0 +1,41 @@
+[project]
+name = "english-learn-backend"
+version = "0.1.0"
+description = "EnglishLearn 后端（第一阶段：框架 + 对话核心接口）"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "httpx>=0.28",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncmy>=0.2.9",
+    "alembic>=1.14",
+    "pydantic-settings>=2.7",
+    "pymysql>=1.1",
+    "cryptography>=44",
+    "numpy>=2.0",
+    "soundfile>=0.13",
+    "pyyaml>=6.0",
+    "python-multipart>=0.0.20",
+]
+
+[project.optional-dependencies]
+# tts_server 独立进程依赖（MLX 后端，仅 Apple Silicon）
+tts = [
+    "mlx-audio>=0.2",
+    "misaki[en]>=0.8",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "aiosqlite>=0.20",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.uv]
+package = false

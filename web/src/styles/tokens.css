@@ -1,0 +1,56 @@
+/* ============================================================
+   设计令牌（Design Tokens）— 迁移自 prototype/styles.css
+   ============================================================ */
+:root {
+  /* 品牌色 */
+  --primary-color: #4a90e2;
+  --primary-dark: #357abd;
+  --accent-color: #ff6b35;
+  /* 基础色 */
+  --color-ink: #1f2a37;
+  --color-muted: #8a94a6;
+  --color-bg: #eef3f9;
+  --color-surface: #fff;
+  --color-bg-secondary: #f4f6fa;
+  --color-bg-tertiary: #f0f3f8;
+  /* 功能色 */
+  --color-success: #2fa562;
+  --color-danger: #e0533d;
+  --color-star: #f5a623;
+  --color-star-bright: #ffc107;
+  /* 浅色底（图标块 / 标签） */
+  --tint-blue: #e7f0fd;
+  --tint-orange: #fdeee7;
+  --tint-orange-soft: #fff2ec;
+  --tint-green: #e9f7ef;
+  --tint-purple: #f3ecfb;
+  --tint-yellow: #fff7e0;
+  --tint-danger: #fdeeec;
+  /* 间距 */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 14px;
+  --spacing-lg: 18px;
+  --spacing-xl: 24px;
+  /* 圆角 */
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+  --radius-xl: 24px;
+  --radius-full: 999px;
+  /* 字号 */
+  --font-size-xs: 11px;
+  --font-size-sm: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 17px;
+  /* 阴影 / 触控 */
+  --shadow-card: 0 8px 24px rgba(31, 42, 55, 0.06);
+  --touch-target: 44px;
+  /* 旧变量别名（SVG 属性等仍在引用，保留兼容） */
+  --blue: var(--primary-color);
+  --blue-dark: var(--primary-dark);
+  --orange: var(--accent-color);
+  --bg: var(--color-bg);
+  --ink: var(--color-ink);
+  --muted: var(--color-muted);
+}

@@ -1,0 +1,449 @@
+@import './tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== 全局基础 ===== */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+html,
+body,
+#app {
+  height: 100%;
+}
+body {
+  margin: 0;
+  /* 防止外层出现滚动条，滚动统一由 .screen-body 承担 */
+  overflow: hidden;
+  font-family: -apple-system, 'SF Pro Text', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: radial-gradient(1200px 600px at 20% -10%, #dbe7fb 0%, #eef3f9 45%, #e9eef6 100%);
+  color: var(--color-ink);
+}
+
+/* ===== 应用壳：PC 居中窄栏 ===== */
+.app-frame {
+  position: relative;
+  width: 100%;
+  max-width: 520px;
+  height: 100vh;
+  /* 手机上 100vh 含浏览器 UI 区域会超出可视高度，dvh 随实际视口动态变化 */
+  height: 100dvh;
+  margin: 0 auto;
+  background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 0 60px rgba(31, 42, 55, 0.12);
+}
+
+/* ===== 屏幕容器 ===== */
+.screen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+  animation: fadeIn 0.28s ease;
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.screen-body {
+  flex: 1;
+  overflow-y: auto;
+}
+.screen-body::-webkit-scrollbar {
+  width: 0;
+}
+.screen-body--secondary {
+  background: var(--color-bg-secondary);
+}
+/* 首页问候区 */
+.screen-hero {
+  padding: var(--spacing-md) var(--spacing-lg) var(--spacing-sm);
+}
+/* 各屏底部"按住说话"操作区（footer） */
+.screen-footer {
+  padding-left: var(--spacing-lg);
+  padding-right: var(--spacing-lg);
+  /* 底部叠加 iOS Home Indicator 安全区，避免内容被黑条遮挡 */
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+}
+.screen-footer--tall {
+  padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+}
+
+/* ===== 通用 ===== */
+.card {
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+.glass {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+.card-gradient-brand {
+  background: linear-gradient(135deg, rgba(74, 144, 226, 0.14), rgba(255, 107, 53, 0.12));
+}
+.badge-ai {
+  background: linear-gradient(135deg, var(--primary-color), #6aa9ee);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.tag {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  font-weight: 700;
+}
+.tag--success {
+  background: var(--tint-green);
+  color: var(--color-success);
+}
+.tag--info {
+  background: var(--tint-blue);
+  color: var(--primary-color);
+}
+.tag--accent {
+  background: var(--tint-orange-soft);
+  color: var(--accent-color);
+}
+.tag--on-primary {
+  background: rgba(255, 255, 255, 0.25);
+}
+.muted {
+  color: var(--color-muted);
+}
+.text-accent {
+  color: var(--accent-color);
+}
+.text-primary {
+  color: var(--primary-color);
+}
+.bg-tertiary {
+  background: var(--color-bg-tertiary);
+}
+.licon {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  scrollbar-width: none;
+}
+/* 功能入口 / 动作面板图标底色 */
+.icon-tile--blue {
+  background: var(--tint-blue);
+}
+.icon-tile--orange {
+  background: var(--tint-orange);
+}
+.icon-tile--green {
+  background: var(--tint-green);
+}
+.icon-tile--purple {
+  background: var(--tint-purple);
+}
+.icon-tile--yellow {
+  background: var(--tint-yellow);
+}
+/* 禁用锁定态 */
+.btn-locked {
+  opacity: 0.35 !important;
+  pointer-events: none;
+}
+
+/* ===== 触控区扩展 ===== */
+.hit-target {
+  position: relative;
+}
+.hit-target::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--touch-target);
+  height: var(--touch-target);
+  min-width: 100%;
+  min-height: 100%;
+  transform: translate(-50%, -50%);
+}
+
+/* ===== 共享动画 / 波形 ===== */
+@keyframes wave {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+.wavebar {
+  display: flex;
+  gap: 3px;
+  align-items: flex-end;
+  height: 22px;
+}
+.wavebar--md {
+  height: 16px;
+}
+.wavebar--sm {
+  height: 12px;
+}
+.wavebar i {
+  width: 3px;
+  background: var(--accent-color);
+  border-radius: 2px;
+  animation: wave 0.9s ease-in-out infinite;
+}
+.wavebar i:nth-child(odd) {
+  animation-duration: 0.7s;
+}
+@keyframes spkRing {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(1.18);
+  }
+}
+@keyframes recBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+.rec-dot {
+  background: var(--accent-color);
+  animation: recBlink 1s ease-in-out infinite;
+}
+
+/* ===== Component: ChatBubble 基础（跨聊天/对话跟读复用） ===== */
+.bubble {
+  max-width: 76%;
+  padding: 10px 13px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-md);
+  line-height: 1.5;
+}
+.bubble.them {
+  background: var(--color-surface);
+  border-top-left-radius: 5px;
+}
+.bubble.me {
+  background: linear-gradient(135deg, var(--primary-color), #5ea0ee);
+  color: #fff;
+  border-top-right-radius: 5px;
+}
+.bubble--lg {
+  max-width: 82%;
+}
+.bubble--xl {
+  max-width: 90%;
+}
+.bubble--compact {
+  padding: 8px 11px;
+}
+.help-btn {
+  font-size: var(--font-size-xs);
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-tertiary);
+  color: var(--primary-color);
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  position: relative;
+}
+.help-btn:active {
+  background: #e3e9f2;
+}
+/* 小三角展开 */
+.tri-btn {
+  color: var(--color-muted);
+  font-size: 18px;
+  line-height: 1;
+  transition: transform 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 6px;
+  margin: -6px -4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.tri-btn.open {
+  transform: rotate(90deg);
+}
+.bubble.me .tri-btn {
+  color: rgba(255, 255, 255, 0.9);
+}
+/* 收藏星标 */
+.fav-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 20px;
+  line-height: 1;
+  color: #c2c8d2;
+  position: relative;
+}
+.fav-btn:active {
+  transform: scale(1.15);
+}
+@keyframes favGlow {
+  0% {
+    box-shadow: 0 0 0 0 rgba(245, 166, 35, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(245, 166, 35, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(245, 166, 35, 0);
+  }
+}
+.fav-btn.faved {
+  color: var(--color-star-bright);
+  animation: favGlow 0.5s ease-out;
+}
+.bubble.me .fav-btn {
+  color: rgba(255, 255, 255, 0.7);
+}
+.bubble.me .fav-btn.faved,
+.bubble.me .fav-btn:hover {
+  color: var(--color-star-bright);
+}
+
+/* ===== 浮层 / 底部面板（ActionSheet 及后续弹窗复用） ===== */
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(2px);
+}
+.overlay.center {
+  align-items: center;
+}
+.sheet {
+  width: 100%;
+  background: var(--color-surface);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  padding: var(--spacing-lg) var(--spacing-lg) calc(26px + env(safe-area-inset-bottom, 0px));
+  animation: slideUp 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.sheet--flat {
+  border-radius: 0;
+}
+@keyframes slideUp {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+.modal {
+  width: 300px;
+  background: var(--color-surface);
+  border-radius: 22px;
+  padding: var(--spacing-lg) 20px;
+  animation: popIn 0.25s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.modal--sm {
+  max-width: 280px;
+}
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.sheet-handle {
+  width: 44px;
+  height: 5px;
+  border-radius: 3px;
+  background: #e2e6ee;
+  margin: 0 auto var(--spacing-md);
+}
+.sheet-option {
+  background: var(--color-bg-secondary);
+  border: none;
+  cursor: pointer;
+}
+.sheet-option--danger {
+  background: var(--tint-danger);
+  border: none;
+  cursor: pointer;
+}
+.sheet-option--danger .label {
+  color: var(--color-danger);
+}
+
+/* ===== 字体层级 ===== */
+.typ-display {
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+/* ===== 微动效 ===== */
+.grid .card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.grid .card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 32px rgba(31, 42, 55, 0.1);
+}
+.grid .card:active {
+  transform: translateY(0) scale(0.97);
+}
+@keyframes mascotBob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-2px) rotate(3deg);
+  }
+}
+.mascot-icon {
+  animation: mascotBob 2.5s ease-in-out infinite;
+  display: inline-block;
+}
