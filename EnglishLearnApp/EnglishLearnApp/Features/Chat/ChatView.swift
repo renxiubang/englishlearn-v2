@@ -10,8 +10,8 @@ struct ChatView: View {
     @State private var model: ChatViewModel?
     @State private var draft = ""
     @State private var showClearConfirm = false
-    /// 语音/文本输入模式（对应 Web 端 inputMode，语音模式显示「按住 说话」）
-    @State private var voiceMode = false
+    /// 语音/文本输入模式（对应 Web 端 inputMode，语音模式显示「按住 说话」），默认语音模式
+    @State private var voiceMode = true
 
     var body: some View {
         Group {
@@ -23,6 +23,8 @@ struct ChatView: View {
         }
         .navigationTitle(contact.name)
         .navigationBarTitleDisplayMode(.inline)
+        // 进入聊天页覆盖底部 Tab，返回列表时自动恢复
+        .toolbar(.hidden, for: .tabBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { ChannelBadge() }
             ToolbarItem(placement: .topBarTrailing) {
