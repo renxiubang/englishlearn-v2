@@ -1,7 +1,7 @@
 /* =====================================================
  * 模拟后端服务（Vite dev 中间件，零额外依赖）
- * 仅保留后端尚未实现的接口（user / favorites / pic-stories / assist-hints / speech-score）；
- * contacts / chats / assist 等已对接真实后端，未命中的请求经 next() 落到 vite proxy。
+ * 仅保留后端尚未实现的接口（user / favorites / pic-story-progress / assist-hints / speech-score）；
+ * contacts / chats / assist / pic-stories / categories 等已对接真实后端，未命中的请求经 next() 落到 vite proxy。
  * 统一响应格式：{ code, data, message }，模拟 100-300ms 延迟。
  * 数据存于内存，dev 服务运行期间持久；生产构建不参与打包。
  * ===================================================== */
@@ -9,8 +9,6 @@ import type { Plugin } from 'vite'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   ASSIST_HINTS,
-  CATS,
-  PIC_STORIES,
   SCORE_RANGES,
   USER_PROFILE,
   USER_STATS,
@@ -125,19 +123,6 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<boolea
     const idx = favorites.findIndex((f) => f.id === id)
     if (idx >= 0) favorites.splice(idx, 1)
     send(res, { removed: idx >= 0 })
-    return true
-  }
-
-  // GET /api/pic-stories
-  if (method === 'GET' && path === '/api/pic-stories') {
-    send(res, PIC_STORIES)
-    return true
-  }
-
-  // GET /api/categories?type=
-  if (method === 'GET' && path === '/api/categories') {
-    const type = url.searchParams.get('type') ?? ''
-    send(res, CATS[type] ?? [])
     return true
   }
 

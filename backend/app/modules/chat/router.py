@@ -49,8 +49,9 @@ async def get_messages(
     page, has_more, next_cursor = await repo.page_messages(
         db, DEFAULT_USER_ID, contact_id, cursor, limit
     )
+    assets = await repo.audio_assets_by_message(db, [m.id for m in page])
     return ok({
-        "list": [repo.message_to_dict(m) for m in page],
+        "list": [repo.message_to_dict(m, assets.get(m.id)) for m in page],
         "hasMore": has_more,
         "nextCursor": next_cursor,
     })

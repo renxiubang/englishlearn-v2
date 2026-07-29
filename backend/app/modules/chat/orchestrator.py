@@ -75,15 +75,21 @@ class VoiceMessageOrchestrator:
     ) -> AsyncIterator[str]:
         audio_b64: str = upload["audio_b64"]
 
-        # ── 阶段A 准备：占位插入对方消息拿 id ──────────────
+        # ── 阶段A 准备：先占位我方消息再占位对方消息（保证 id 序 = 时间序）──
+        user_duration = fmt_duration(upload["duration_sec"])
         async with SessionLocal() as db:
             context = await repo.recent_context(
                 db, user_id, contact_id, self._settings.context_limit
+            )
+            me_msg = await repo.insert_message(
+                db, user_id=user_id, contact_id=contact_id, from_side="me",
+                duration=user_duration,
             )
             reply_msg = await repo.insert_message(
                 db, user_id=user_id, contact_id=contact_id, from_side="them"
             )
             await db.commit()
+            me_id = me_msg.id
             reply_id = reply_msg.id
 
         yield sse("reply_start", {"id": reply_id})
@@ -110,6 +116,8 @@ class VoiceMessageOrchestrator:
                     logger.warning(f"TTS failed, degrade to text-only: {e}")
                     tts_failed = True
                     continue
+                if not pcm:
+                    continue  # 纯表情分片过滤后为空，跳过
                 pcm_parts.append(pcm)
                 await out_q.put((
                     "reply_audio_chunk",
@@ -178,15 +186,12 @@ class VoiceMessageOrchestrator:
         user_raw, user_en = await self._mllm.transcribe_correct(audio_b64)
         yield sse("user_en", {"en": user_en, "raw": user_raw})
 
-        # 我方消息落库（en=纠译、raw=原译、zh 置空待按需翻译），并绑定原声文件
-        user_duration = fmt_duration(upload["duration_sec"])
+        # 我方消息回填（en=纠译、raw=原译、zh 置空待按需翻译）
         async with SessionLocal() as db:
-            me_msg = await repo.insert_message(
-                db, user_id=user_id, contact_id=contact_id, from_side="me",
-                en=user_en, raw=user_raw, duration=user_duration,
-            )
-            await db.flush()
-            me_id = me_msg.id
+            msg = await db.get(repo.Message, me_id)
+            if msg:
+                msg.en = user_en
+                msg.raw = user_raw
             await db.commit()
 
         # 原声文件重命名为 msg_{id}_raw.{ext}
@@ -205,6 +210,8 @@ class VoiceMessageOrchestrator:
                 logger.warning(f"stage-B TTS failed, keep text: {e}")
                 tts_ok = False
                 break
+            if not pcm:
+                continue  # 纯表情分片过滤后为空，跳过
             me_pcm_parts.append(pcm)
             yield sse(
                 "user_audio_chunk",

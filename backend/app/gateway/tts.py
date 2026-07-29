@@ -2,6 +2,7 @@
 
 import base64
 import logging
+import re
 
 import httpx
 
@@ -10,6 +11,23 @@ from app.core.config import Settings
 logger = logging.getLogger(__name__)
 
 DEFAULT_SAMPLE_RATE = 24000
+
+# emoji 及相关控制符：国旗/表情/图形符号（含扩展）、杂项符号与装饰符、
+# 变体选择符、零宽连接符、键帽组合符
+EMOJI_RE = re.compile(
+    "["
+    "\U0001F1E6-\U0001FAFF"
+    "\u2600-\u27BF"
+    "\u2B00-\u2BFF"
+    "\uFE0E\uFE0F\u200D\u20E3"
+    "]+"
+)
+
+
+def strip_emoji(text: str) -> str:
+    """去除 emoji 后归并多余空白，避免 TTS 读出表情符号。"""
+    cleaned = EMOJI_RE.sub("", text)
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
 
 
 class TTSGateway:
@@ -37,7 +55,13 @@ class TTSGateway:
             return False
 
     async def synthesize(self, text: str) -> bytes:
-        """文本→Int16 PCM mono 字节流（服务端直出 Int16，无需转换）。"""
+        """文本→Int16 PCM mono 字节流（服务端直出 Int16，无需转换）。
+
+        合成前过滤 emoji；过滤后为空（纯表情分片）直接返回空字节，不请求服务。
+        """
+        text = strip_emoji(text)
+        if not text:
+            return b""
         resp = await self._client.post(
             "/v1/audio/speech",
             json={

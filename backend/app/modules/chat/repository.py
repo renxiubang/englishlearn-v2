@@ -4,6 +4,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import AudioAsset, Contact, Message
+from app.modules.speech.service import fmt_duration
 
 
 async def get_contact(db: AsyncSession, contact_id: str) -> Contact | None:
@@ -142,8 +143,12 @@ async def delete_chat_history(
     return len(ids), paths
 
 
-def message_to_dict(m: Message) -> dict:
-    """Message → api.md ChatMessage 形状（可选字段仅在有值时输出）。"""
+def message_to_dict(m: Message, assets: list[AudioAsset] | None = None) -> dict:
+    """Message → api.md ChatMessage 形状（可选字段仅在有值时输出）。
+
+    assets 为该消息关联的音频资产：them 的 tts → url；
+    me 的 user_raw/tts → userAudio/ttsAudio（历史消息回放，api.md 接口 4）。
+    """
     d: dict = {"id": m.id, "from": m.from_side, "en": m.en, "zh": m.zh}
     if m.raw:
         d["raw"] = m.raw
@@ -153,4 +158,33 @@ def message_to_dict(m: Message) -> dict:
         d["score"] = m.score
     if m.text_only:
         d["textOnly"] = True
+    for a in assets or []:
+        url = f"/audio/{a.path}"
+        duration = (
+            fmt_duration(a.duration_ms / 1000) if a.duration_ms
+            else (m.duration or "0:00")
+        )
+        if m.from_side == "them" and a.kind == "tts":
+            d["url"] = url
+        elif m.from_side == "me" and a.kind == "user_raw":
+            d["userAudio"] = {"url": url, "duration": duration}
+        elif m.from_side == "me" and a.kind == "tts":
+            d["ttsAudio"] = {"url": url, "duration": duration}
     return d
+
+
+async def audio_assets_by_message(
+    db: AsyncSession, message_ids: list[int]
+) -> dict[int, list[AudioAsset]]:
+    """批量取页内消息的音频资产，按 message_id 分组（接口 4 回填音频字段）。"""
+    if not message_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(AudioAsset).where(AudioAsset.message_id.in_(message_ids))
+        )
+    ).scalars()
+    grouped: dict[int, list[AudioAsset]] = {}
+    for asset in rows:
+        grouped.setdefault(asset.message_id, []).append(asset)
+    return grouped

@@ -5,6 +5,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { assistApi } from '@/api'
 import { toast } from '@/composables/useToast'
+import { talkState } from '@/composables/useTalk'
 import { createPcmPlayer, playBlob, playUrl, stopUrl } from '@/composables/usePcmPlayer'
 import type { Recording } from '@/composables/useRecorder'
 
@@ -19,8 +20,12 @@ const props = withDefaults(
     /** chat：带跟读语音区；picture：仅提示与点读 */
     mode?: 'chat' | 'picture'
     favorited?: boolean
+    /** 复读校验进行中（父组件接口 17 期间置真）：读完啦按钮变灰并提示 */
+    verifying?: boolean
+    /** 复读校验不通过原因：录音清空后在语音位置展示 */
+    errorReason?: string
   }>(),
-  { zh: '', en: '', audio: undefined, mode: 'chat', favorited: false },
+  { zh: '', en: '', audio: undefined, mode: 'chat', favorited: false, verifying: false, errorReason: '' },
 )
 
 const emit = defineEmits<{
@@ -188,7 +193,7 @@ defineExpose({ addVoice, resetVoices, voiceCount })
 </script>
 
 <template>
-  <div class="assist-mini" :class="{ playing }">
+  <div class="assist-mini" :class="{ playing, 'hint-guard': talkState.active }">
     <button class="assist-close" @click="emit('close')">✕</button>
     <div class="assist-zh">{{ zhText || (audio ? '正在翻译…' : '') }}</div>
 
@@ -242,7 +247,15 @@ defineExpose({ addVoice, resetVoices, voiceCount })
           <span v-if="voiceCount > 1" class="voice-del-hint">(每次删除最后一段)</span>
         </div>
       </div>
-      <button class="assist-finish" @click="onFinish">读完啦</button>
+      <div class="assist-finish-col">
+        <button class="assist-finish" :class="{ verifying }" :disabled="verifying" @click="onFinish">读完啦</button>
+        <span v-if="verifying" class="assist-finish-hint">口音比对中…</span>
+      </div>
+    </div>
+
+    <!-- 校验不通过：录音已清空，在语音位置说明不通过原因 -->
+    <div v-else-if="mode === 'chat' && errorReason" class="assist-voice-row assist-error-row">
+      <span class="assist-error-text">{{ errorReason }}</span>
     </div>
   </div>
 </template>
@@ -251,10 +264,15 @@ defineExpose({ addVoice, resetVoices, voiceCount })
 .assist-mini {
   position: relative;
   background: var(--color-surface);
-  padding: 16px 16px 12px;
+  padding: 20px 16px 18px;
   border-top: 1px solid rgba(0, 0, 0, 0.06);
   animation: assistUp 0.25s ease-out;
   overflow: hidden;
+  transition: padding-bottom 0.18s ease;
+}
+/* 按住跟读时（TalkHint 浮层位于底部 80px）抬高卡片内容，避免被盖住文字 */
+.assist-mini.hint-guard {
+  padding-bottom: 104px;
 }
 @keyframes assistUp {
   from {
@@ -534,5 +552,35 @@ defineExpose({ addVoice, resetVoices, voiceCount })
 }
 .assist-finish:active {
   opacity: 0.85;
+}
+/* 读完啦按钮 + 下方校验提示垂直排列 */
+.assist-finish-col {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+/* 校验中：按钮变灰不可点 */
+.assist-finish.verifying,
+.assist-finish:disabled {
+  background: var(--color-bg-tertiary);
+  color: var(--color-muted);
+  cursor: default;
+  opacity: 1;
+}
+.assist-finish-hint {
+  font-size: 11px;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+/* 校验不通过：占据语音位置提示原因 */
+.assist-error-row {
+  justify-content: flex-start;
+}
+.assist-error-text {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--accent-color);
 }
 </style>

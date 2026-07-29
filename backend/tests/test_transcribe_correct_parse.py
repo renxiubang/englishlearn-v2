@@ -29,11 +29,19 @@ def test_parse_failure_degrades_to_plain_text():
     assert raw == en == "I went to school yesterday."
 
 
-def test_empty_en_degrades():
-    """JSON 合法但 en 为空同样走降级。"""
+def test_empty_en_returns_empty():
+    """JSON 合法但 en 为空：判定为空转录，返回 ("", "")，不透传围栏原文。"""
     text = '{"raw": "something", "en": ""}'
     raw, en = parse_transcribe_correct(text)
-    assert raw == en == text
+    assert raw == en == ""
+
+
+def test_empty_fenced_json_returns_empty():
+    """模型返回带 ```json 围栏的空 raw/en：不把围栏原文当转录透传。"""
+    raw, en = parse_transcribe_correct(
+        '```json\n{\n  "raw": "",\n  "en": ""\n}\n```'
+    )
+    assert raw == en == ""
 
 
 def test_missing_raw_falls_back_to_en():

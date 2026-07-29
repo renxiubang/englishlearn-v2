@@ -139,6 +139,7 @@ async function onTalkSend() {
   // 辅助卡片打开时：松开记录一段跟读语音
   if (assistAudio) {
     assistCardRef.value?.addVoice(rec)
+    verifyError.value = ''
     toast('已记录跟读语音，可继续跟读或点击"读完啦"')
     return
   }
@@ -278,10 +279,13 @@ let assistAudio: Recording | null = null
 const assistShown = ref(false)
 const assistCardRef = ref<InstanceType<typeof AssistCard> | null>(null)
 const verifying = ref(false)
+/** 复读校验不通过原因（传入卡片在语音位置展示） */
+const verifyError = ref('')
 
 function closeAssist() {
   assistAudio = null
   assistShown.value = false
+  verifyError.value = ''
 }
 
 async function onAssistFinish(payload: { count: number; rec: Recording | null; en: string }) {
@@ -291,12 +295,13 @@ async function onAssistFinish(payload: { count: number; rec: Recording | null; e
     return
   }
   verifying.value = true
+  verifyError.value = ''
   try {
     // 接口 17：复读语义校验
     const r = await assistApi.verify(payload.rec.blob, payload.en)
     if (!r.consistent) {
       assistCardRef.value?.resetVoices()
-      toast(r.reason || '读的不太准，重新来一次吧')
+      verifyError.value = r.reason || '读的不太准，重新来一次吧'
       return
     }
     const rec = payload.rec
@@ -304,7 +309,7 @@ async function onAssistFinish(payload: { count: number; rec: Recording | null; e
     // 校验通过：复读音频作为正式语音消息走 5b 上屏并获取 AI 回复
     await sendVoice(rec, true)
   } catch (e) {
-    toast(e instanceof Error ? e.message : '校验失败')
+    verifyError.value = e instanceof Error ? e.message : '校验失败'
   } finally {
     verifying.value = false
   }
@@ -430,6 +435,8 @@ function plusAction(name: string) {
       ref="assistCardRef"
       :audio="assistAudio.blob"
       mode="chat"
+      :verifying="verifying"
+      :error-reason="verifyError"
       @close="closeAssist"
       @finish="onAssistFinish"
       @favorite="onFavorite"

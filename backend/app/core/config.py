@@ -35,7 +35,11 @@ class Settings(BaseSettings):
     # 存储与服务
     storage_dir: str = "./storage"
     api_port: int = 8080
-    cors_origins: list[str] = ["http://localhost:5173"]
+    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:5174"]
+
+    # 管理后台（单管理员密码方案，登录签发 HMAC token）
+    admin_password: str = "admin123"
+    admin_token_ttl: int = 12 * 3600  # token 有效期（秒）
 
     # 上传约束（api.md 通用约定）
     max_audio_bytes: int = 10 * 1024 * 1024  # 10MB → 413
@@ -46,9 +50,24 @@ class Settings(BaseSettings):
     # 会话上下文条数
     context_limit: int = 20
 
+    # 日志：级别 + 轮转策略（time=按日期每天切分；size=按大小切分）
+    log_level: str = "INFO"
+    log_dir: str = "./logs"
+    log_rotation: str = "time"
+    log_max_bytes: int = 10 * 1024 * 1024  # size 模式单文件上限
+    log_backup_count: int = 7               # 保留份数（天数/文件数）
+
     @property
     def storage_path(self) -> Path:
         p = Path(self.storage_dir)
+        if not p.is_absolute():
+            p = BASE_DIR / p
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def log_path(self) -> Path:
+        p = Path(self.log_dir)
         if not p.is_absolute():
             p = BASE_DIR / p
         p.mkdir(parents=True, exist_ok=True)

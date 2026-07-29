@@ -120,10 +120,10 @@ onBeforeUnmount(() => {
       <button class="tri-btn flex-none" :class="{ open: expanded }" @click="expanded = !expanded">▸</button>
     </div>
     <div v-if="expanded" class="mt-2">
-      <!-- me 语音消息带原译时分两行展示原译/纠译 -->
+      <!-- me 语音消息带原译时分两行展示原译/AI译 -->
       <div v-if="side === 'me' && raw" class="text-[13px] space-y-1">
         <div class="opacity-80">原译：{{ raw }}</div>
-        <div>纠译：{{ en }}</div>
+        <div>AI译：{{ en }}</div>
       </div>
       <div v-else class="text-[13px]">{{ en }}</div>
       <!-- them：慢速 / 翻译 / 收藏 -->

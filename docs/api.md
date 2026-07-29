@@ -206,6 +206,9 @@ curl http://localhost:5173/api/contacts
 | duration | string? | 语音时长（如 `"0:04"`；无则为纯文本消息） |
 | score | number? | 我方语音评分 |
 | textOnly | boolean? | 纯文本消息（无语音条） |
+| url | string? | 对方语音消息的 TTS 音频地址（`/audio/*.wav`，供历史回放；仅有音频时返回，与 `reply_end.url` 同源） |
+| userAudio | `{url,duration}?` | 我方语音消息的原声音频（仅有音频时返回，与 `user_bubble.userAudio` 同源） |
+| ttsAudio | `{url,duration}?` | 我方语音消息的英文合成音（仅有音频时返回，与 `user_bubble.ttsAudio` 同源） |
 
 **前端消费约定**：进入聊天页不带 `cursor` 拉最新一页；上滑到顶且 `hasMore=true` 时携带 `nextCursor` 拉更早一页，前插到消息列表头部。
 

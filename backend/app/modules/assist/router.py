@@ -55,6 +55,8 @@ async def translate(
             seq = 0
             for sentence in _split_sentences(en):
                 pcm = await tts.synthesize(sentence)  # 失败抛出 → error
+                if not pcm:
+                    continue  # 纯表情分片过滤后为空，跳过
                 pcm_parts.append(pcm)
                 yield sse(
                     "audio_chunk",

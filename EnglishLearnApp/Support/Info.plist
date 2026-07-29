@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 自建后端为局域网 HTTP（uvicorn :8080），放行本地网络明文请求；dashscope 为 HTTPS 不受影响 -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>连接局域网内的自建学习后端服务，用于同步聊天记录与语音。</string>
+	<!-- M2 语音链路前置声明：按住说话录音 -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>录制你的英语口语，用于对话陪练、发音纠正与翻译。</string>
+</dict>
+</plist>

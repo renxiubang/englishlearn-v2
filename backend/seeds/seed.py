@@ -1,6 +1,7 @@
-"""种子数据：从 web/mock/data.ts 迁移 amy 用户 + 7 个联系人（含 persona_prompt 初稿）。
+"""种子数据：amy 用户 + 7 个联系人（含 persona_prompt 初稿）
++ 任务提示词（prompts.yaml 导入）+ 四模块分类与内容（web/mock/data.ts 迁入）。
 
-幂等：按主键 merge，可重复执行。
+幂等：联系人/用户按主键 merge；提示词/分类/内容存在即跳过，可重复执行。
 用法：cd backend && uv run python seeds/seed.py
 """
 
@@ -9,7 +10,8 @@ import asyncio
 from sqlalchemy import func, select
 
 from app.core.db import SessionLocal
-from app.models.tables import Contact, Message, User
+from app.gateway.prompts import KEY_REMARKS, load_yaml_prompts
+from app.models.tables import Category, Contact, Message, Prompt, Story, User
 
 AMY = User(
     id="amy",
@@ -93,6 +95,99 @@ GREETINGS = {
     "human": ("How was your day at school today?", "你今天在学校过得怎么样？"),
 }
 
+# ---------- 四模块分类（web/mock/data.ts CATS 迁入，"全部"由接口层拼接不入表） ----------
+CATEGORIES: dict[str, list[str]] = {
+    "storyRead": ["动物自然", "家庭生活", "户外探索", "节日活动"],
+    "dialogueRead": ["日常对话", "旅行出行", "健康生活"],
+    "listenStory": ["动物自然", "家庭生活", "户外探索", "节日活动"],
+    "picStory": ["动物自然", "家庭生活", "户外探索", "节日活动"],
+}
+
+# ---------- 看图讲故事 8 条（web/mock/data.ts PIC_STORIES 迁入） ----------
+PIC_STORIES = [
+    ("公园野餐", "picnic", "家庭生活", ["A happy family is having a picnic in the sunny park.", "They are sharing sandwiches and fresh fruit.", "Everyone is laughing and having a great time."]),
+    ("海边拾贝", "beach", "户外探索", ["The children are picking shells on the beach.", "Waves are rolling in and out gently.", "A little crab is hiding under a big rock."]),
+    ("奇妙的动物园之旅", "zoo", "动物自然", ["We saw many animals at the zoo today.", "The monkeys are jumping from tree to tree.", "A tall giraffe is eating leaves quietly."]),
+    ("雪地里的小狗", "snowdog", "动物自然", ["A little dog is playing in the white snow.", "It is running after a red ball.", "Its footprints look like small flowers."]),
+    ("生日派对", "birthday", "节日活动", ["Today is my birthday and I am so happy.", "My friends are singing the birthday song.", "I made a wish and blew out the candles."]),
+    ("一起放风筝", "kite", "户外探索", ["We are flying a colorful kite in the field.", "The wind is strong and the kite flies high.", "It looks like a bird dancing in the sky."]),
+    ("森林探险", "forest", "户外探索", ["We are going on an adventure in the forest.", "Tall trees are blocking the bright sun.", "We heard birds singing in the branches."]),
+    ("快乐的农场", "farm", "动物自然", ["The farm is full of happy animals.", "Cows are eating grass in the field.", "The farmer is collecting fresh eggs."]),
+]
+
+# ---------- 故事跟读 / 听故事示例（sentences 载荷，后台演示用） ----------
+STORY_READ = [
+    ("小猫找妈妈", "动物自然", ["The little cat is looking for her mom.", "She walks through the tall green grass.", "At last she finds her mom under the big tree."]),
+    ("周末的早餐", "家庭生活", ["Dad is making pancakes on Sunday morning.", "The kitchen smells sweet and warm.", "We eat together and talk about our plans."]),
+    ("雨后的彩虹", "户外探索", ["The rain stops and the sun comes out.", "A beautiful rainbow appears in the sky.", "We count its seven bright colors together."]),
+]
+
+LISTEN_STORY = [
+    ("月亮晚安", "家庭生活", ["The moon rises over the quiet town.", "Mom reads a bedtime story softly.", "The little girl falls asleep with a smile."]),
+    ("勇敢的小鸟", "动物自然", ["A baby bird stands on the edge of the nest.", "It flaps its small wings and jumps.", "It flies for the first time into the blue sky."]),
+]
+
+# ---------- 对话跟读示例（turns 载荷） ----------
+DIALOGUE_READ = [
+    ("点餐", "日常对话", [
+        {"role": "A", "en": "What would you like to eat?", "zh": "你想吃点什么？"},
+        {"role": "B", "en": "I would like a sandwich, please.", "zh": "我想要一个三明治。"},
+        {"role": "A", "en": "Anything to drink?", "zh": "要喝点什么吗？"},
+        {"role": "B", "en": "Orange juice, thank you!", "zh": "橙汁，谢谢！"},
+    ]),
+    ("问路", "旅行出行", [
+        {"role": "A", "en": "Excuse me, where is the museum?", "zh": "请问博物馆在哪里？"},
+        {"role": "B", "en": "Go straight and turn left at the corner.", "zh": "直走，在路口左转。"},
+        {"role": "A", "en": "Thank you so much!", "zh": "非常感谢！"},
+    ]),
+    ("看医生", "健康生活", [
+        {"role": "A", "en": "What's wrong with you today?", "zh": "你今天怎么了？"},
+        {"role": "B", "en": "I have a headache and a cough.", "zh": "我头痛还咳嗽。"},
+        {"role": "A", "en": "Take this medicine and rest well.", "zh": "吃这个药，好好休息。"},
+    ]),
+]
+
+
+async def seed_prompts(session) -> None:
+    """提示词：prompts.yaml 导入（存在即跳过，不覆盖后台修改）。"""
+    for key, content in load_yaml_prompts().items():
+        if await session.get(Prompt, key):
+            continue
+        session.add(Prompt(key=key, content=content,
+                           remark=KEY_REMARKS.get(key, "")))
+
+
+async def seed_categories(session) -> None:
+    for module_type, names in CATEGORIES.items():
+        for i, name in enumerate(names, start=1):
+            exists = await session.scalar(select(Category).where(
+                Category.module_type == module_type, Category.name == name
+            ))
+            if not exists:
+                session.add(Category(module_type=module_type, name=name,
+                                     sort_order=i))
+
+
+async def seed_stories(session) -> None:
+    async def add(module_type: str, title: str, seed: str | None,
+                  cat: str, content: dict, order: int) -> None:
+        exists = await session.scalar(select(Story).where(
+            Story.module_type == module_type, Story.title == title
+        ))
+        if not exists:
+            session.add(Story(module_type=module_type, title=title, seed=seed,
+                              cat=cat, content=content, sort_order=order,
+                              enabled=True))
+
+    for i, (title, seed, cat, sentences) in enumerate(PIC_STORIES, start=1):
+        await add("picStory", title, seed, cat, {"sentences": sentences}, i)
+    for i, (title, cat, sentences) in enumerate(STORY_READ, start=1):
+        await add("storyRead", title, None, cat, {"sentences": sentences}, i)
+    for i, (title, cat, sentences) in enumerate(LISTEN_STORY, start=1):
+        await add("listenStory", title, None, cat, {"sentences": sentences}, i)
+    for i, (title, cat, turns) in enumerate(DIALOGUE_READ, start=1):
+        await add("dialogueRead", title, None, cat, {"turns": turns}, i)
+
 
 async def main() -> None:
     async with SessionLocal() as session:
@@ -114,8 +209,13 @@ async def main() -> None:
                     user_id="amy", contact_id=c.id, from_side="them",
                     en=en, zh=zh, text_only=True,
                 ))
+        # 运营内容：提示词 / 分类 / 四模块内容（存在即跳过）
+        await seed_prompts(session)
+        await seed_categories(session)
+        await seed_stories(session)
         await session.commit()
-    print("seed done: 1 user, 7 contacts, greetings inserted where empty")
+    print("seed done: 1 user, 7 contacts, greetings, "
+          "prompts + categories + stories inserted where empty")
 
 
 if __name__ == "__main__":

@@ -31,21 +31,26 @@ Context = list[dict[str, str]]
 def parse_transcribe_correct(raw_output: str) -> tuple[str, str]:
     """解析 transcribe_correct 的 JSON 输出，返回 (raw, en)。
 
-    复用 verify_semantic 模式：正则取首个 {...} + json.loads；
-    解析失败降级 raw = en = 模型原文（strip 后），打 warning 日志。
+    复用 verify_semantic 模式：正则取首个 {...} + json.loads。
+    两类降级分开处理：
+    - JSON 结构损坏（无 {...} 或 json.loads 失败）：打 "parse failed"，
+      raw = en = 模型原文（strip 后），保留可读信息交下游兜底；
+    - JSON 正常但 raw/en 为空（模型没听清）：打 "empty transcription"，
+      返回 ("", "")，不把带围栏的 JSON 原文透传给下游。
     """
     text = (raw_output or "").strip()
     try:
         m = re.search(r"\{.*\}", text, re.DOTALL)
         data = json.loads(m.group(0) if m else text)
-        raw = str(data.get("raw") or "").strip()
-        en = str(data.get("en") or "").strip()
-        if not en:
-            raise ValueError("empty en")
-        return raw or en, en
-    except (json.JSONDecodeError, AttributeError, ValueError):
+    except (json.JSONDecodeError, AttributeError):
         logger.warning(f"transcribe_correct JSON parse failed: {text[:200]!r}")
         return text, text
+    raw = str(data.get("raw") or "").strip()
+    en = str(data.get("en") or "").strip()
+    if not en:
+        logger.warning(f"transcribe_correct empty transcription: {text[:200]!r}")
+        return "", ""
+    return raw or en, en
 
 
 def _audio_part(audio_b64: str, provider: str = "local") -> dict[str, Any]:
@@ -55,6 +60,26 @@ def _audio_part(audio_b64: str, provider: str = "local") -> dict[str, Any]:
         "type": "input_audio",
         "input_audio": {"data": data, "format": "wav"},
     }
+
+
+def _dump_messages(messages: list[dict]) -> str:
+    """DEBUG 用：序列化送模型的完整 messages，音频 base64 替换为占位符。"""
+    safe: list[dict] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if part.get("type") == "input_audio":
+                    data = part.get("input_audio", {}).get("data", "")
+                    parts.append({"type": "input_audio",
+                                  "data": f"<base64 {len(data)} chars>"})
+                else:
+                    parts.append(part)
+            safe.append({"role": msg.get("role"), "content": parts})
+        else:
+            safe.append(msg)
+    return json.dumps(safe, ensure_ascii=False, indent=2)
 
 
 class MLLMGateway:
@@ -78,6 +103,9 @@ class MLLMGateway:
 
     def _payload(self, messages: list[dict], *, stream: bool = False,
                  max_tokens: int = 512) -> dict[str, Any]:
+        # 临时排查用：LOG_LEVEL=DEBUG 时输出送模型的完整上下文（音频已脱敏）
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("MLLM request messages:\n%s", _dump_messages(messages))
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": messages,

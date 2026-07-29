@@ -1,11 +1,13 @@
-"""阶段一最小表集：users / contacts / messages / audio_assets。
+"""数据表集：users / contacts / messages / audio_assets
++ 运营内容表 prompts / categories / stories（管理后台维护）。
 
-字段与 api.md 契约对齐（ChatMessage / Contact / UserProfile）。
+字段与 api.md 契约对齐（ChatMessage / Contact / UserProfile / PicStory）。
 """
 
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     DateTime,
@@ -14,6 +16,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -68,6 +71,53 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
+
+
+class Prompt(Base):
+    """任务提示词（原 prompts.yaml 迁入 DB，管理后台可维护，保存即生效）。"""
+
+    __tablename__ = "prompts"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    content: Mapped[str] = mapped_column(Text, default="")
+    remark: Mapped[str] = mapped_column(String(255), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Category(Base):
+    """内容分类（接口 13）；"全部"由接口层拼在首位，不入表。"""
+
+    __tablename__ = "categories"
+    __table_args__ = (UniqueConstraint("module_type", "name", name="uk_module_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # picStory / storyRead / dialogueRead / listenStory
+    module_type: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(32))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class Story(Base):
+    """统一运营内容表：四个模块共用，content JSON 承载模块差异化载荷。
+
+    - storyRead / picStory / listenStory: {"sentences": [...]}（listenStory 预留 "audio"）
+    - dialogueRead: {"turns": [{"role", "en", "zh"}, ...]}
+    """
+
+    __tablename__ = "stories"
+    __table_args__ = (UniqueConstraint("module_type", "seed", name="uk_module_seed"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    module_type: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(64))
+    # picStory 取图与进度主键；其他模块可空
+    seed: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cat: Mapped[str] = mapped_column(String(32), default="")
+    content: Mapped[dict] = mapped_column(JSON, default=dict)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class AudioAsset(Base):
