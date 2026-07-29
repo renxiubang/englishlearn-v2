@@ -74,6 +74,7 @@ async def insert_message(
     from_side: str,
     en: str = "",
     zh: str = "",
+    raw: str = "",
     duration: str | None = None,
     score: int | None = None,
     text_only: bool = False,
@@ -84,6 +85,7 @@ async def insert_message(
         from_side=from_side,
         en=en,
         zh=zh,
+        raw=raw,
         duration=duration,
         score=score,
         text_only=text_only,
@@ -143,6 +145,8 @@ async def delete_chat_history(
 def message_to_dict(m: Message) -> dict:
     """Message → api.md ChatMessage 形状（可选字段仅在有值时输出）。"""
     d: dict = {"id": m.id, "from": m.from_side, "en": m.en, "zh": m.zh}
+    if m.raw:
+        d["raw"] = m.raw
     if m.duration is not None:
         d["duration"] = m.duration
     if m.score is not None:

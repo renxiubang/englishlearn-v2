@@ -12,6 +12,8 @@ const props = withDefaults(
     side: 'them' | 'me'
     en: string
     zh?: string
+    /** me 语音气泡：原始逐字转录（原译，en 为纠译） */
+    raw?: string
     /** 语音时长文案（服务端返回值格式化） */
     duration?: string
     /** them 气泡的 tts 音频地址（点击/慢速播放） */
@@ -33,6 +35,7 @@ const props = withDefaults(
   }>(),
   {
     zh: '',
+    raw: '',
     duration: '',
     url: '',
     userAudio: undefined,
@@ -48,6 +51,8 @@ const props = withDefaults(
 const emit = defineEmits<{
   /** 收藏状态切换 */
   favorite: [payload: { en: string; zh: string; faved: boolean }]
+  /** 请求按需翻译（zh 为空时点击"翻译"触发，接口 19） */
+  translate: []
 }>()
 
 const expanded = ref(false)
@@ -63,6 +68,16 @@ function toggleFav() {
   faved.value = !faved.value
   toast(faved.value ? '已加入收藏' : '已取消收藏')
   emit('favorite', { en: props.en, zh: props.zh, faved: faved.value })
+}
+
+/** 翻译按钮：zh 未生成时向上游请求按需翻译（展示"翻译中…"占位），已有则切换显隐 */
+function onTranslateClick() {
+  if (!props.zh) {
+    emit('translate')
+    zhShown.value = true
+    return
+  }
+  zhShown.value = !zhShown.value
 }
 
 function playMain() {
@@ -105,27 +120,36 @@ onBeforeUnmount(() => {
       <button class="tri-btn flex-none" :class="{ open: expanded }" @click="expanded = !expanded">▸</button>
     </div>
     <div v-if="expanded" class="mt-2">
-      <div class="text-[13px]">{{ en }}</div>
+      <!-- me 语音消息带原译时分两行展示原译/纠译 -->
+      <div v-if="side === 'me' && raw" class="text-[13px] space-y-1">
+        <div class="opacity-80">原译：{{ raw }}</div>
+        <div>纠译：{{ en }}</div>
+      </div>
+      <div v-else class="text-[13px]">{{ en }}</div>
       <!-- them：慢速 / 翻译 / 收藏 -->
       <div v-if="side === 'them'" class="flex flex-wrap gap-2 mt-2">
         <button class="help-btn" @click="playSlow">慢速</button>
-        <button class="help-btn" @click="zhShown = !zhShown">🌐 翻译</button>
+        <button class="help-btn" @click="onTranslateClick">🌐 翻译</button>
         <button class="fav-btn ml-auto" :class="{ faved }" @click="toggleFav">{{ faved ? '★' : '☆' }}</button>
       </div>
       <!-- me：AI读 / 翻译 / 收藏 -->
       <div v-else class="flex flex-wrap gap-2 mt-2 justify-between items-center">
         <div class="flex flex-wrap gap-2">
           <button class="help-btn" @click="aiRead"><span class="spk-ic" :class="{ ringing: aiReading }">AI读</span></button>
-          <button class="help-btn" @click="zhShown = !zhShown">🌐 翻译</button>
+          <button class="help-btn" @click="onTranslateClick">🌐 翻译</button>
         </div>
         <button class="fav-btn" :class="{ faved }" @click="toggleFav">{{ faved ? '★' : '☆' }}</button>
       </div>
-      <div v-if="zhShown && zh" class="mt-2">
-        <div v-if="side === 'them'" class="text-[13px] text-accent">{{ zh }}</div>
-        <div v-else class="text-[12px] opacity-90">{{ zh }}</div>
-        <div v-if="side === 'them' && warnOnTranslate" class="text-[10px] mt-1 text-accent">
-          ⚠️ 本句因您点击了“翻译/提示”按钮，熟练度权重降低
-        </div>
+      <div v-if="zhShown" class="mt-2">
+        <template v-if="zh">
+          <div v-if="side === 'them'" class="text-[13px] text-accent">{{ zh }}</div>
+          <div v-else class="text-[12px] opacity-90">{{ zh }}</div>
+          <div v-if="side === 'them' && warnOnTranslate" class="text-[10px] mt-1 text-accent">
+            ⚠️ 本句因您点击了“翻译/提示”按钮，熟练度权重降低
+          </div>
+        </template>
+        <!-- 按需翻译进行中（接口 19）占位 -->
+        <div v-else class="text-[12px] opacity-70">翻译中…</div>
       </div>
     </div>
   </div>

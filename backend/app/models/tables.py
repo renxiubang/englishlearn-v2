@@ -59,6 +59,8 @@ class Message(Base):
     from_side: Mapped[str] = mapped_column(Enum("them", "me", name="msg_from"))
     en: Mapped[str] = mapped_column(Text, default="")
     zh: Mapped[str] = mapped_column(Text, default="")
+    # 我方语音消息的原始逐字转录（"原译"，5b 阶段B 产出；其余消息为空）
+    raw: Mapped[str] = mapped_column(Text, default="")
     # 语音时长（如 "0:04"；NULL = 纯文本消息）
     duration: Mapped[str | None] = mapped_column(String(8), nullable=True)
     score: Mapped[int | None] = mapped_column(Integer, nullable=True)

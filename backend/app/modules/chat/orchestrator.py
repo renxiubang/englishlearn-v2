@@ -2,11 +2,12 @@
 
 串行两阶段：
 - 阶段A（回复优先）：LLM 流式回复文本 → reply_delta；按句断句驱动 TTS →
-  reply_audio_chunk（与 delta 交错）；reply_end 收尾（zh 翻译 + 语音落盘）。
-- 阶段B（语法归一化链，级联三调用）：transcribe(en) 原始转录（中间产物不下发）
-  → translate(en→zh) 得 user_zh → translate(zh→en) 得语法规范 user_en →
-  TTS 分片 → 落库我方消息 → user_bubble → done。
+  reply_audio_chunk（与 delta 交错）；reply_end 收尾（语音落盘，不产出 zh）。
+- 阶段B（单次 JSON 结构化调用）：transcribe_correct → {raw 原译, en 纠译}
+  → user_en{en,raw} → TTS 分片 → 落库我方消息（en/raw，zh 置空）→
+  user_bubble → done。
 
+中文翻译不在对话流中产出：zh 由接口 19 按需生成并写回消息。
 TTS 失败降级（5b 保文本）：跳过剩余音频分片，reply_end 的 duration/url 为 null。
 """
 
@@ -143,11 +144,8 @@ class VoiceMessageOrchestrator:
             yield sse(item[0], item[1])
         await producer_task  # 透传 LLM 流异常
 
-        # ── 阶段A 收尾：zh 翻译、语音落盘、更新对方消息 ─────
+        # ── 阶段A 收尾：语音落盘、更新对方消息（zh 经接口 19 按需生成）─
         reply_en = "".join(reply_parts).strip()
-        reply_zh = (
-            await self._mllm.translate(reply_en, "en_to_zh") if reply_en else ""
-        )
 
         reply_duration: str | None = None
         reply_url: str | None = None
@@ -163,7 +161,6 @@ class VoiceMessageOrchestrator:
             msg = await db.get(repo.Message, reply_id)
             if msg:
                 msg.en = reply_en
-                msg.zh = reply_zh
                 msg.duration = reply_duration
             if reply_url:
                 await repo.insert_audio_asset(
@@ -174,28 +171,19 @@ class VoiceMessageOrchestrator:
 
         yield sse(
             "reply_end",
-            {"zh": reply_zh, "duration": reply_duration, "url": reply_url},
+            {"duration": reply_duration, "url": reply_url},
         )
 
-        # ── 阶段B：语法归一化链（转录 → en→zh → zh→en）──────
-        raw_transcription = await self._mllm.transcribe(audio_b64, "en")
-        user_zh = (
-            await self._mllm.translate(raw_transcription, "en_to_zh")
-            if raw_transcription else ""
-        )
-        yield sse("user_zh", {"zh": user_zh})
+        # ── 阶段B：单次 JSON 结构化调用（转录+语法修正，原译/纠译）──
+        user_raw, user_en = await self._mllm.transcribe_correct(audio_b64)
+        yield sse("user_en", {"en": user_en, "raw": user_raw})
 
-        user_en = (
-            await self._mllm.translate(user_zh, "zh_to_en") if user_zh else ""
-        )
-        yield sse("user_en", {"en": user_en})
-
-        # 我方消息落库（en 存归一化后文本），并绑定原声文件
+        # 我方消息落库（en=纠译、raw=原译、zh 置空待按需翻译），并绑定原声文件
         user_duration = fmt_duration(upload["duration_sec"])
         async with SessionLocal() as db:
             me_msg = await repo.insert_message(
                 db, user_id=user_id, contact_id=contact_id, from_side="me",
-                en=user_en, zh=user_zh, duration=user_duration,
+                en=user_en, raw=user_raw, duration=user_duration,
             )
             await db.flush()
             me_id = me_msg.id
@@ -248,7 +236,7 @@ class VoiceMessageOrchestrator:
             {
                 "id": me_id,
                 "en": user_en,
-                "zh": user_zh,
+                "raw": user_raw,
                 "userAudio": {"url": f"/audio/{raw_name}", "duration": user_duration},
                 "ttsAudio": tts_audio,
             },

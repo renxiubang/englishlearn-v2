@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     )
 
     # 多模态大模型（OpenAI 兼容）
+    # provider 兼容开关：local=本地 Gemma；dashscope=百炼 Qwen-Omni（开发期临时替换）
+    mllm_provider: str = "local"
     mllm_base_url: str = "http://127.0.0.1:8000/v1"
     mllm_model: str = "gemma-4-e4b-it-4bit"
     mllm_api_key: str = "omlx-local"

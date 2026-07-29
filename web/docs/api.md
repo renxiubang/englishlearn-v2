@@ -1,6 +1,6 @@
 # 后端接口文档（API 契约）
 
-> 本文档描述前端（`web/`）依赖的全部后端接口，共 **18 个**。
+> 本文档描述前端（`web/`）依赖的全部后端接口，共 **19 个**。
 > 当前由 Vite dev 中间件模拟实现（`web/mock/plugin.ts` + `web/mock/data.ts`），真实后端按此契约实现即可无缝替换。
 > 前端调用封装见 `web/src/api/index.ts`，类型定义见 `web/src/types/index.ts`。
 
@@ -26,6 +26,7 @@
 | 16 | POST | `/api/assist/translate` | 辅助卡片翻译生成（SSE 流式） | 聊天页 / 看图讲故事 |
 | 17 | POST | `/api/assist/verify` | 辅助卡片复读语义校验 | 聊天页 / 看图讲故事 |
 | 18 | DELETE | `/api/chats/{contactId}/messages` | 清空聊天记录 | 聊天页 |
+| 19 | POST | `/api/messages/{messageId}/translate` | 消息中文翻译（按需生成） | 聊天页 |
 
 ## 通用约定
 
@@ -53,7 +54,7 @@
 |--------|------|----------|
 | 400 | 参数缺失/非法 | 必填字段为空、音频格式不在白名单（webm/ogg/mp4/wav）、时长超 60s |
 | 401 | 未授权（预留） | 启用登录后 token 缺失/失效；当前单用户免登阶段不会出现 |
-| 404 | 资源不存在 | `contactId` 不存在；未匹配的 `/api/*` 路径统一返回 `{ "code": 404, "data": null, "message": "not found" }` |
+| 404 | 资源不存在 | `contactId` / `messageId` 不存在；未匹配的 `/api/*` 路径统一返回 `{ "code": 404, "data": null, "message": "not found" }` |
 | 409 | 会话冲突 | 同一会话已有进行中的 5b 流（见接口 5b 错误与降级） |
 | 413 | 请求体过大 | 上传音频超过 10MB |
 | 429 | 触发限流 | 对话类接口（5b/16/17）单用户超过 20 次/分钟 |
@@ -199,8 +200,9 @@ curl http://localhost:5173/api/contacts
 |------|------|------|
 | id | number | 消息 ID |
 | from | `'them' \| 'me'` | 发送方 |
-| en | string | 英文内容 |
-| zh | string | 中文翻译 |
+| en | string | 英文内容（我方语音消息为语法修正后英文，即"纠译"） |
+| zh | string | 中文翻译（**按需生成**：点击"翻译"按钮经接口 19 生成并落库，未翻译时为空串） |
+| raw | string? | 我方语音消息的原始逐字转录（"原译"，5b 阶段B 产出；仅非空时返回） |
 | duration | string? | 语音时长（如 `"0:04"`；无则为纯文本消息） |
 | score | number? | 我方语音评分 |
 | textOnly | boolean? | 纯文本消息（无语音条） |
@@ -244,71 +246,13 @@ curl "http://localhost:5173/api/chats/dad/messages?limit=20"
 
 > **适用范围**：5b 仅覆盖**用户说英文**的语音消息。语种判断由**前端本地模型**完成：判定为中文时不发往本接口，转入辅助卡片流程（接口 16/17）；判定为英文时直接送入本接口，后端多模态大模型直接对语音识别并推理，无需前置 ASR。
 
-#### 后端架构（双大模型）
+#### 处理阶段（串行两阶段）
 
-后端由 Chat 编排服务调度两个大模型完成全部处理，前端只消费 SSE 事件：
+后端由双大模型（① 多模态大模型：语音理解 · 回复生成 · 翻译；② TTS 大模型：文本 → 语音）编排完成全部处理，前端只消费 SSE 事件；后端编排架构与内部时序见 [architecture.md](./architecture.md) §2.1–§2.3。契约级语义：
 
-- **① 多模态大模型**：接收语音/文本输入，负责回复生成（流式英文文本）、用户语音→中文翻译、中文→英文文本转换
-- **② TTS 大模型**：文本→合成语音
-
-```mermaid
-flowchart LR
-    subgraph FE["前端 ChatView"]
-        MIC["按住说话<br/>（用户英文语音）"]
-        BUB_THEM["对方气泡<br/>打字机文本 + 语音条"]
-        BUB_ME["我方气泡<br/>原声条 + 英文合成条<br/>+ 英文文本（中文可展开）"]
-    end
-
-    subgraph BE["后端"]
-        ORCH["Chat 编排服务<br/>（阶段调度 / SSE 推送）"]
-        MLLM["① 多模态大模型<br/>语音理解 · 回复生成 · 翻译"]
-        TTS["② TTS 大模型<br/>文本 → 语音"]
-    end
-
-    MIC -- "multipart/form-data<br/>POST /api/chats/:id/messages" --> ORCH
-    ORCH -- "SSE 事件流（单连接）" --> BUB_THEM
-    ORCH -- "SSE 事件流（单连接）" --> BUB_ME
-    ORCH <--> MLLM
-    ORCH <--> TTS
-```
-
-#### 处理时序（串行两阶段）
-
-- **阶段A（回复优先）**：编排服务将用户语音 + 会话上下文送入多模态 LLM，流式产出英文回复文本（`reply_delta`）；**回复合成语音在后端由该流式文本直接触发**（凑满一句即送 TTS，边生成边合成，非前端触发），因此语音分片（`reply_audio_chunk`）与文本增量**可交错下发**，最后以 `reply_end` 收尾。
-- **阶段B（严格在阶段A 的回复语音合成完成后启动）**：多模态 LLM 将用户英文语音译为中文（`user_zh`）→ 中文转英文文本（`user_en`）→ TTS 合成英文语音分片流式下发（`user_audio_chunk`）→ `user_bubble` 汇总回填我方气泡。
-
-```mermaid
-sequenceDiagram
-    participant FE as 前端
-    participant CS as Chat编排服务
-    participant M as 多模态大模型
-    participant T as TTS大模型
-
-    FE->>CS: POST 语音(multipart)，建立 SSE
-    CS-->>FE: reply_start
-    Note over CS,T: 阶段A：LLM 流式文本直接驱动 TTS（后端内部）
-    CS->>M: 用户语音 + 会话上下文
-    loop 边生成边合成
-        M-->>CS: 英文文本增量
-        CS-->>FE: reply_delta
-        CS->>T: 凑满一句即送 TTS
-        T-->>CS: 语音分片
-        CS-->>FE: reply_audio_chunk（与 delta 交错）
-    end
-    CS-->>FE: reply_end（回复语音合成完成）
-    Note over CS,M: 阶段B：此时才启动用户语音转换链
-    CS->>M: 用户英文语音 → 翻译中文
-    M-->>CS: 中文文本
-    CS-->>FE: user_zh
-    CS->>M: 中文 → 英文文本
-    M-->>CS: 英文文本
-    CS-->>FE: user_en
-    CS->>T: 英文文本
-    T-->>CS: 合成语音（分片流式）
-    CS-->>FE: user_audio_chunk × N
-    CS-->>FE: user_bubble（汇总回填）
-    CS-->>FE: done（关闭流）
-```
+- **阶段A（回复优先）**：英文回复文本流式下发（`reply_delta`），回复合成语音分片（`reply_audio_chunk`）**可与文本增量交错下发**，最后以 `reply_end` 收尾。
+- **阶段B（严格在 `reply_end` 之后启动）**：`user_en`（用户语音的原始转录 `raw` + 语法修正英文 `en`，多模态大模型单次 JSON 结构化输出）→ `user_audio_chunk`（英文合成语音分片）→ `user_bubble`（汇总回填我方气泡）严格有序。
+- **不再即时生成中文翻译**：阶段A/阶段B 均不产出 zh；双方气泡的中文经接口 19 在用户点击"翻译"按钮后按需生成。
 
 #### 5a. 文本消息（同步，现有行为不变）
 
@@ -322,9 +266,9 @@ sequenceDiagram
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| reply | ChatReply | 对方回复：`{ id, from: 'them', en, zh, textOnly: true }` |
+| reply | ChatReply | 对方回复：`{ id, from: 'them', en, textOnly: true }` |
 
-> 字段说明：`id` 为对方消息主键（number，数据库自增，与接口 4 的 `ChatMessage.id` 同源）；文本消息的回复为**纯文本**（`textOnly: true`，不触发 TTS，无 `duration`/语音条），与 5b 语音链路区分。
+> 字段说明：`id` 为对方消息主键（number，数据库自增，与接口 4 的 `ChatMessage.id` 同源）；文本消息的回复为**纯文本**（`textOnly: true`，不触发 TTS，无 `duration`/语音条），与 5b 语音链路区分；回复**不附中文翻译**，zh 由接口 19 按需生成。
 
 > mock 行为：按联系人类型（ai/human）从脚本中依次取回复，每个会话独立推进进度，超出脚本后停留在最后一条；当前 mock 仍返回旧结构 `{from,en,zh,duration}`，`id`/`textOnly` 待 mock 层同步改造。
 
@@ -340,7 +284,7 @@ curl -X POST http://localhost:5173/api/chats/dad/messages \
 {
   "code": 0,
   "data": {
-    "reply": { "id": 102, "from": "them", "en": "That sounds fun! Who did you play with?", "zh": "听起来很有趣！你和谁一起玩的？", "textOnly": true }
+    "reply": { "id": 102, "from": "them", "en": "That sounds fun! Who did you play with?", "textOnly": true }
   },
   "message": "ok"
 }
@@ -373,18 +317,17 @@ data: <JSON 载荷>
 | 1 | `reply_start` | `{ id }` | 阶段A 开始：对方气泡占位上屏（`id` 为对方消息主键，number，数据库自增，与接口 4 同源） |
 | 2… | `reply_delta` | `{ text }` | 回复英文文本增量（多模态 LLM 流式输出，前端打字机追加） |
 | 2… | `reply_audio_chunk` | `{ seq, base64 }` | 回复合成语音分片（base64 内联直发；后端由流式文本按句触发 TTS，**可与 `reply_delta` 交错**；`seq` 从 0 递增） |
-| 3 | `reply_end` | `{ zh, duration, url }` | 阶段A 完成：附回复的中文翻译、语音总时长（如 `"0:04"`）与完整语音地址（预分配，文件异步落盘，供历史回放）；TTS 降级时 `duration`/`url` 为 `null` |
-| 4 | `user_zh` | `{ zh }` | 阶段B：用户语音已译为中文 |
-| 5 | `user_en` | `{ en }` | 阶段B：中文已转英文文本 |
-| 6… | `user_audio_chunk` | `{ seq, base64 }` | 阶段B：英文合成语音分片（base64 内联直发，TTS 流式，`seq` 从 0 递增） |
-| 7 | `user_bubble` | `{ id, en, zh, userAudio:{url,duration}, ttsAudio:{url,duration} }` | 阶段B 完成：汇总回填我方气泡（原声 + 英文合成音 + 双语文本；`id` 为我方消息主键，number） |
+| 3 | `reply_end` | `{ duration, url }` | 阶段A 完成：附语音总时长（如 `"0:04"`）与完整语音地址（供历史消息回放）；TTS 降级时 `duration`/`url` 为 `null`；**不附中文翻译**（zh 经接口 19 按需生成） |
+| 4 | `user_en` | `{ en, raw }` | 阶段B：用户语音单次送多模态大模型，JSON 结构化输出原始逐字转录 `raw`（"原译"）与语法修正后英文 `en`（"纠译"） |
+| 5… | `user_audio_chunk` | `{ seq, base64 }` | 阶段B：英文合成语音分片（base64 内联直发，TTS 流式，`seq` 从 0 递增） |
+| 6 | `user_bubble` | `{ id, en, raw, userAudio:{url,duration}, ttsAudio:{url,duration} }` | 阶段B 完成：汇总回填我方气泡（原声 + 英文合成音 + 原译/纠译文本；`id` 为我方消息主键，number） |
 | 任意 | `error` | `{ code, message }` | 流内错误（发生后直接 `done` 结束） |
 | 末 | `done` | `{}` | 流结束，服务端关闭连接 |
 
 **时序约束**
 
 1. 阶段A 内 `reply_delta` 与 `reply_audio_chunk` 可交错（后端按句触发 TTS），但各自按序发送；
-2. 阶段B 严格在 `reply_end`（回复语音合成完成）之后启动，`user_zh → user_en → user_audio_chunk → user_bubble` 严格有序；
+2. 阶段B 严格在 `reply_end`（回复语音合成完成）之后启动，`user_en → user_audio_chunk → user_bubble` 严格有序；
 3. 无论成功或 `error`，流均以 `done` 结束。
 
 **错误与降级**
@@ -393,7 +336,7 @@ data: <JSON 载荷>
 - **流建立后**的错误以 `error` 事件下发，随后 `done` 结束；
 - **TTS 降级**：合成失败时已下发的 `reply_delta` 文本保留，跳过剩余 `reply_audio_chunk`，`reply_end` 正常收尾且 `duration`/`url` 为 `null`，前端隐藏该气泡语音条（保文本优先于中断对话）。
 
-**音频分片传输说明**：分片为 **base64 内联直发**——TTS 产出分片后不经对象存储，直接编码进事件体下发，将分片延迟降到最低；分片 `base64` 解码后为 **Int16 PCM mono 24kHz** 裸音频流（无容器头，接口 16 的 `audio_chunk` 同格式），前端按 `seq` 顺序拼流播放（`AudioContext` 按片排队）。完整音频文件由后端在流结束后合并落盘为 **wav**，终态事件中的 `url`（`reply_end.url` / `user_bubble.*.url`）为最终地址（形如 `/audio/msg_{id}_tts.wav`），供历史消息回放使用；当场回放优先使用已接收的分片。
+**音频分片传输说明**：分片为 **base64 内联直发**，`base64` 解码后为 **Int16 PCM mono 24kHz** 裸音频流（无容器头，接口 16 的 `audio_chunk` 同格式），前端按 `seq` 顺序拼流播放（`AudioContext` 按片排队）。终态事件中的 `url`（`reply_end.url` / `user_bubble.*.url`）为完整 **wav** 音频地址，供历史消息回放使用；当场回放优先使用已接收的分片。分片传输模式与完整文件落盘的后端实现见 [architecture.md](./architecture.md) §2.6。
 
 **Demo**
 
@@ -424,13 +367,10 @@ event: reply_audio_chunk
 data: {"seq":1,"base64":"o0AgQoaBAUL3gQFCouEB…（略）"}
 
 event: reply_end
-data: {"zh":"听起来很有趣！你和谁一起玩的？","duration":"0:04","url":"/audio/msg_101.webm"}
-
-event: user_zh
-data: {"zh":"我今天踢了足球。"}
+data: {"duration":"0:04","url":"/audio/msg_101.webm"}
 
 event: user_en
-data: {"en":"I played football today."}
+data: {"en":"I played football today.","raw":"I play football today."}
 
 event: user_audio_chunk
 data: {"seq":0,"base64":"GkXfo0AgQoaBAUL3gQFC…（略）"}
@@ -439,13 +379,13 @@ event: user_audio_chunk
 data: {"seq":1,"base64":"o0AgQoaBAUL3gQFCouEB…（略）"}
 
 event: user_bubble
-data: {"id":100,"en":"I played football today.","zh":"我今天踢了足球。","userAudio":{"url":"/audio/msg_100_raw.webm","duration":"0:04"},"ttsAudio":{"url":"/audio/msg_100_tts.webm","duration":"0:03"}}
+data: {"id":100,"en":"I played football today.","raw":"I play football today.","userAudio":{"url":"/audio/msg_100_raw.webm","duration":"0:04"},"ttsAudio":{"url":"/audio/msg_100_tts.webm","duration":"0:03"}}
 
 event: done
 data: {}
 ```
 
-**前端消费约定**：发送时我方气泡立即以“原声语音条 + 转换中”占位上屏；`reply_*` 驱动对方气泡流式上屏（阶段A 先完成），音频分片 base64 解码后按 `seq` 拼流播放；`user_*` 驱动我方气泡逐步回填双语文本与英文合成音（阶段B 后完成）；`error` 时清理占位气泡并提示。
+**前端消费约定**：发送时我方气泡立即以“原声语音条 + 转换中”占位上屏；`reply_*` 驱动对方气泡流式上屏（阶段A 先完成），音频分片 base64 解码后按 `seq` 拼流播放；`user_*` 驱动我方气泡回填原译/纠译英文与英文合成音（阶段B 后完成）；双方气泡的中文在点击“翻译”按钮后经接口 19 获取；`error` 时清理占位气泡并提示。
 
 > 实现状态：5b 为接口标准，面向真实后端实现；当前 mock 层（`web/mock/plugin.ts`）与前端尚未实现，待标准确认后另行安排。
 
@@ -453,7 +393,7 @@ data: {}
 
 `DELETE /api/chats/{contactId}/messages`
 
-删除该会话的全部消息、关联音频记录（audio_assets）及对应物理音频文件（`msg_*_raw.*` / `msg_*_tts.wav`）。
+删除该会话的全部消息及其关联音频资源。
 
 **路径参数**
 
@@ -461,7 +401,7 @@ data: {}
 |------|------|------|
 | contactId | string | 联系人 ID，不存在返回 `404` |
 
-**错误**：同一会话存在进行中的 5b 语音流时返回 `409`（与 5b 共用会话锁，避免清空过程中产生孤儿文件）。
+**错误**：同一会话存在进行中的 5b 语音流时返回 `409`（见接口 5b 错误与降级）。
 
 **响应 `data` 字段**
 
@@ -478,6 +418,42 @@ curl -X DELETE http://localhost:5173/api/chats/dad/messages
 ```json
 { "code": 0, "data": { "removed": 24 }, "message": "ok" }
 ```
+
+### 19. 消息中文翻译（按需生成）
+
+`POST /api/messages/{messageId}/translate`
+
+用户在气泡展开区点击"翻译"按钮时调用：后端将该消息的英文（`en`）送多模态大模型译为中文，**写回消息落库**后返回；后续历史消息（接口 4）直接携带该 `zh`，无需重复翻译。适用于双方气泡（5a/5b 产生的消息均不再预生成 zh）。
+
+**路径参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| messageId | number | 消息 ID（接口 4/5 返回的主键），不存在返回 `404` |
+
+无请求体。
+
+**错误**：消息的 `en` 为空（无可翻译内容）返回 `400`。
+
+**幂等语义**：消息已有 `zh`（含存量历史消息）时不重复调用模型，直接返回已有译文。
+
+**响应 `data` 字段**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| zh | string | 中文译文（已同步落库到该消息） |
+
+**Demo**
+
+```bash
+curl -X POST http://localhost:5173/api/messages/102/translate
+```
+
+```json
+{ "code": 0, "data": { "zh": "听起来很有趣！你和谁一起玩的？" }, "message": "ok" }
+```
+
+> 实现状态：接口 19 为接口标准，面向真实后端实现；mock 层不覆盖 chat 链路，无需同步改造。
 
 ---
 
@@ -603,7 +579,7 @@ curl "http://localhost:5173/api/assist-hints?scene=picture"
 
 `POST /api/assist/translate`
 
-前端本地模型检测到用户说中文后弹出辅助卡片（中文语音不进入接口 5b），并携用户中文语音调用本接口。后端处理链（双大模型，同接口 5b 架构）：多模态大模型直接对中文语音识别得中文文本 → 中文文本翻译为英文文本 → **TTS 在后端由英文文本直接触发**合成语音，分片流式下发给前端卡片。
+前端本地模型检测到用户说中文后弹出辅助卡片（中文语音不进入接口 5b），并携用户中文语音调用本接口。后端依次产出：中文文本（`zh`）→ 英文文本（`en`）→ 英文合成语音分片（`audio_chunk`），流式下发给前端卡片；后端双模型处理链见 [architecture.md](./architecture.md) §2.3。
 
 **请求体**（`multipart/form-data`）
 
@@ -622,7 +598,7 @@ curl "http://localhost:5173/api/assist-hints?scene=picture"
 | 1 | `zh` | `{ zh }` | 中文语音已转中文文本（卡片即时显示中文） |
 | 2 | `en` | `{ en }` | 已翻译英文文本（卡片默认隐藏，点击展开） |
 | 3… | `audio_chunk` | `{ seq, base64 }` | 英文合成语音分片（base64 内联直发，`seq` 从 0 递增） |
-| 4 | `audio_end` | `{ url, duration }` | 合成完成：完整语音地址（预分配，文件异步落盘）与时长（卡片语音条就绪并自动播放，当场播放用已接收分片） |
+| 4 | `audio_end` | `{ url, duration }` | 合成完成：完整语音地址与时长（卡片语音条就绪并自动播放，当场播放用已接收分片） |
 | 任意 | `error` | `{ code, message }` | 流内错误（发生后直接 `done` 结束） |
 | 末 | `done` | `{}` | 流结束，服务端关闭连接 |
 
@@ -705,44 +681,9 @@ curl -X POST http://localhost:5173/api/assist/verify \
 }
 ```
 
-#### 辅助卡片全流程时序
+#### 辅助卡片全流程
 
-```mermaid
-sequenceDiagram
-    participant U as 用户
-    participant FE as 前端
-    participant CS as Chat编排服务
-    participant M as 多模态大模型
-    participant T as TTS大模型
-
-    U->>FE: 按住说话
-    FE->>FE: 前端本地模型语种判断
-    alt 英文（不进入辅助卡片）
-        FE->>CS: 语音直接送入接口 5b（后端多模态大模型直接识别并推理）
-    else 中文（进入辅助卡片，语音不发往 5b）
-        FE->>FE: 弹出辅助卡片
-        FE->>CS: 接口 16 POST /api/assist/translate（中文语音，SSE）
-        CS->>M: 中文语音 → 中文文本
-        CS-->>FE: zh（卡片显示中文）
-        CS->>M: 中文 → 英文文本
-        CS-->>FE: en（默认隐藏，可展开）
-        CS->>T: 英文文本（后端直接触发）
-        T-->>CS: 合成语音分片
-        CS-->>FE: audio_chunk × N → audio_end → done
-        FE->>FE: 语音条自动播放
-        U->>FE: 按住按钮复读英文
-        FE->>CS: 接口 17 POST /api/assist/verify（复读语音 + en）
-        CS->>M: 判断语音与文本语义一致性
-        alt consistent = true
-            CS-->>FE: { consistent: true }
-            FE->>FE: 完成辅助卡片逻辑（关闭卡片）
-            FE->>CS: 复读语音送入接口 5b（发送消息并获取回复）
-        else consistent = false
-            CS-->>FE: { consistent: false, reason }
-            FE->>FE: 清理录音，提示再次复读
-        end
-    end
-```
+语种分流（英文直送 5b / 中文进卡片）与接口 16/17、5b 衔接的全链路时序见 [architecture.md](./architecture.md) §2.9。
 
 > 实现状态：接口 16/17 为接口标准，面向真实后端实现；当前 mock 层（`web/mock/plugin.ts`）与前端尚未实现，待标准确认后另行安排。
 
@@ -949,15 +890,8 @@ curl -X PUT http://localhost:5173/api/pic-story-progress \
 
 ---
 
-## 附：服务端状态说明（真实后端需落库）
-
-mock 实现中有 4 处内存状态，dev 服务重启即重置；真实后端需按用户维度持久化：
-
-| 状态 | mock 位置 | 说明 |
-|------|-----------|------|
-| 聊天回复进度 | `chatReplyIdx`（Map） | 每个会话的脚本回复游标 → 真实后端为对话上下文 |
-| 转写奇偶计数 | `transcribeCount` | 仅为演示“中文→辅助”节奏 → 真实实现中语种判断由前端本地模型完成 |
-| 收藏列表 | `favorites`（数组，id 自增） | → 收藏表（用户 ID + 英文句唯一约束） |
-| 讲述进度 | `picStoryProgress`（对象） | → 成绩表（用户 ID + 故事 seed，保留最高分） |
+## 附：接口范围说明
 
 未移植模块（故事跟读、对话跟读、听故事、英语秀场、我的）后续需要新增各自的接口，目前仅 `GET /api/categories` 为其预留了 `type` 参数。
+
+> mock 内存状态与真实后端持久化的映射见 [architecture.md](./architecture.md) §4.6。

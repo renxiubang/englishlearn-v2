@@ -43,7 +43,10 @@ export interface ChatMessage {
   id: number
   from: 'them' | 'me'
   en: string
+  /** 中文经接口 19 按需翻译生成，未翻译时为空串 */
   zh: string
+  /** me 语音消息：原始逐字转录（原译，en 为纠译） */
+  raw?: string
   duration?: string
   score?: number
   /** 纯文本消息（无语音条） */
@@ -67,7 +70,7 @@ export interface ChatReply {
   id: number
   from: 'them'
   en: string
-  zh: string
+  zh?: string
   duration?: string
   textOnly?: boolean
 }
@@ -82,7 +85,7 @@ export interface SseAudioChunk {
 export interface UserBubblePayload {
   id: number
   en: string
-  zh: string
+  raw: string
   userAudio: AudioRef
   ttsAudio: AudioRef
 }

@@ -11,6 +11,7 @@ REQUIRED_KEYS = [
     "chat_reply",
     "transcribe_en",
     "transcribe_zh",
+    "transcribe_correct",
     "translate_en_to_zh",
     "translate_zh_to_en",
     "verify_semantic",

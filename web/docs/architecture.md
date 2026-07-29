@@ -1,6 +1,6 @@
 # 后端架构设计文档
 
-> 本文档为 AI 口语陪练产品的后端架构与数据持久化设计，与接口契约文档 [api.md](./api.md)（17 个接口）配套：api.md 定义"对外承诺什么"，本文档定义"内部如何实现与存储"。
+> 本文档为 AI 口语陪练产品的后端架构与数据持久化设计，与接口契约文档 [api.md](./api.md)（19 个接口）配套：api.md 定义"对外承诺什么"，本文档定义"内部如何实现与存储"。
 >
 > - 技术栈：**Python 3.12 + FastAPI**（异步）
 > - 数据库：**MySQL 8.x**
@@ -121,8 +121,8 @@ backend/
 
 已验证的模型接入事实：
 
-- 多模态服务 `http://127.0.0.1:8000/v1`，Bearer Key = `omlx-local`，模型 `gemma-4-e4b-it-4bit`；音频入参为 content part `{"type":"input_audio","input_audio":{"data":<b64>,"format":"wav"}}`（16kHz mono s16 wav）；`temperature=0.0` + `chat_template_kwargs:{enable_thinking:false}` 关思考，解析需兼容 `reasoning_content` 回退；
-- **级联调用模式**：4bit 模型单次调用同时做音频理解+翻译不可靠，gateway 每个方法单一职责纯文本输出（转录/翻译/回复分离）；5b 阶段B 为级联三调用 转录(en)→翻译(en→zh)→翻译(zh→en)，第二次翻译产出语法规范的 `user_en`（语法归一化，产品有意设计）；
+- 多模态服务 `http://127.0.0.1:8000/v1`，Bearer Key = `omlx-local`，模型 `gemma-4-e4b-it-4bit`；音频入参为 content part `{"type":"input_audio","input_audio":{"data":<b64>,"format":"wav"}}`（16kHz mono s16 wav）；`temperature=0.0` + `chat_template_kwargs:{enable_thinking:false}` 关思考，解析需兼容 `reasoning_content` 回退（输出格式约定详见 §2.5）；
+- **调用模式**：4bit 模型复合指令易失效，gateway 方法默认单一职责纯文本输出（转录/翻译/回复分离）；5b 阶段B 改为**单次 JSON 结构化调用** `transcribe_correct`：转录 + 语法修正一次完成，输出 `{"raw": 原始逐字转录, "en": 语法修正英文}`（即"原译/纠译"，对单一职责规范的产品有意例外），解析失败降级 raw=en=模型原文；对话流中**不再产出中文翻译**，zh 由接口 19 按需调用 translate(en→zh) 生成并写回消息；
 - Kokoro TTS 为独立常驻服务 `:8880`（`backend/tts_server/`，MLX 加载 `mlx-community/Kokoro-82M-bf16`），直出 **Int16 PCM mono 24kHz**，后端免转换直接分片下发，完整文件合并后落盘 wav；
 - 上传白名单增加 **wav**（前端下阶段直接产 16kHz wav）；收到 webm/ogg/mp4 时 ffmpeg 转 16kHz mono wav 再送模型。
 
@@ -138,25 +138,52 @@ backend/
 - 生成器每 `yield` 一个 `(event, data)`，即按 SSE 格式 `event: xxx\ndata: {json}\n\n` 写出；
 - 编排器内部只做**调度与组装**，模型调用全部通过 Model Gateway，存储通过 repository / storage client。
 
+编排服务调度两个大模型完成全部处理，前端只消费 SSE 事件：
+
+- **① 多模态大模型**：接收语音/文本输入，负责回复生成（流式英文文本）、用户语音转录+语法修正（单次 JSON 结构化输出）、消息按需中文翻译（接口 19）
+- **② TTS 大模型**：文本→合成语音
+
+以 5b 为例的前后端交互视角（前端气泡如何消费单连接 SSE 事件流）：
+
+```mermaid
+flowchart LR
+    subgraph FE["前端 ChatView"]
+        MIC["按住说话<br/>（用户英文语音）"]
+        BUB_THEM["对方气泡<br/>打字机文本 + 语音条"]
+        BUB_ME["我方气泡<br/>原声条 + 英文合成条<br/>+ 原译/纠译文本（中文按需翻译）"]
+    end
+
+    subgraph BE["后端"]
+        ORCH["Chat 编排服务<br/>（阶段调度 / SSE 推送）"]
+        MLLM["① 多模态大模型<br/>语音理解 · 回复生成 · 翻译"]
+        TTS["② TTS 大模型<br/>文本 → 语音"]
+    end
+
+    MIC -- "multipart/form-data<br/>POST /api/chats/:id/messages" --> ORCH
+    ORCH -- "SSE 事件流（单连接）" --> BUB_THEM
+    ORCH -- "SSE 事件流（单连接）" --> BUB_ME
+    ORCH <--> MLLM
+    ORCH <--> TTS
+```
+
 ### 2.2 5b 串行两阶段流水线
 
-对应 api.md 5b 事件协议（`reply_start → reply_delta/reply_audio_chunk 交错 → reply_end → user_zh → user_en → user_audio_chunk×N → user_bubble → done`）：
+对应 api.md 5b 事件协议（`reply_start → reply_delta/reply_audio_chunk 交错 → reply_end → user_en → user_audio_chunk×N → user_bubble → done`）：
 
 **阶段A（回复优先，边生成边合成）**
 
 1. 加载会话上下文（见 2.4），连同用户语音送多模态 LLM，流式接收英文回复文本；
 2. 文本增量一路直接下发 `reply_delta`；另一路进入**断句器**（`gateway/sentence.py`：按句末标点 + 最小长度凑句）；
 3. 每凑满一句即提交 TTS 合成任务；合成分片以 `reply_audio_chunk{seq,base64}` **内联直发**（不经对象存储，见 2.6）——**TTS 由后端流式文本直接触发，与前端无关**；
-4. LLM 文本流结束且所有 TTS 任务完成后，发 `reply_end{zh,duration,url}`（zh 由 LLM 在回复生成时一并产出或补一次翻译调用；duration 为各分片合并后 ffprobe 实测；url 为预分配的完整文件地址，文件异步落盘）。
+4. LLM 文本流结束且所有 TTS 任务完成后，发 `reply_end{duration,url}`（不再产出 zh，中文经接口 19 按需生成；duration 为各分片合并后 ffprobe 实测；url 为预分配的完整文件地址，文件异步落盘）。
 
 阶段A 内部用 `asyncio.Queue` 汇聚两类事件：LLM 消费协程往队列投 `reply_delta`，TTS 工作协程按句序投 `reply_audio_chunk`（seq 递增），主生成器从队列取出即 yield——**交错但各自有序**，与协议约束一致。
 
 **阶段B（严格在 reply_end 后串行执行）**
 
-5. 用户英文语音 → 多模态 LLM 译中文 → `user_zh`；
-6. 中文 → 英文文本 → `user_en`；
-7. 英文文本 → TTS 流式合成 → `user_audio_chunk×N`；
-8. 汇总落库后发 `user_bubble{id,en,zh,userAudio,ttsAudio}`，最后 `done`。
+5. 用户英文语音 → 多模态 LLM 单次 JSON 结构化调用 `transcribe_correct` → `{raw, en}`（原译 + 纠译）→ `user_en{en,raw}`；
+6. 纠译英文（en）→ TTS 流式合成 → `user_audio_chunk×N`；
+7. 汇总落库（en=纠译、raw=原译、zh 置空待按需翻译）后发 `user_bubble{id,en,raw,userAudio,ttsAudio}`，最后 `done`。
 
 ### 2.3 组件级时序（5b 服务内部）
 
@@ -180,22 +207,24 @@ sequenceDiagram
         G-->>O: 语音分片(bytes)
         O-->>FE: reply_audio_chunk{seq,base64}（内联直发）
     end
-    O->>S: 落库对方消息(en,zh,audio)
-    O-->>FE: reply_end{zh,duration,url}
-    Note over O: 阶段B：串行链
-    O->>G: mllm.audio_to_zh(audio)
-    O-->>FE: user_zh
-    O->>G: mllm.zh_to_en(zh)
-    O-->>FE: user_en
+    O->>S: 落库对方消息(en,audio)
+    O-->>FE: reply_end{duration,url}
+    Note over O: 阶段B：单次 JSON 结构化调用（见 §1.4）
+    O->>G: mllm.transcribe_correct(audio)
+    G-->>O: JSON {raw, en}（原译 + 纠译，解析失败降级 raw=en=原文）
+    O-->>FE: user_en{en,raw}
     O->>G: tts.synthesize_stream(en)
+    G-->>O: 语音分片(bytes) × N
     O-->>FE: user_audio_chunk × N
-    O->>S: 落库我方消息(en,zh,原声+合成音)
+    O->>S: 落库我方消息(en,raw,原声+合成音)
     O-->>FE: user_bubble
     O-->>FE: done
     Note over O,S: 流结束后：分片异步合并为完整音频写 OSS（url 已预分配随终态事件下发）
 ```
 
-接口 16（辅助卡片翻译生成）复用同一套骨架，链路为单阶段：`audio_to_zh → zh(事件) → zh_to_en → en(事件) → tts 流式 → audio_chunk×N → audio_end → done`，不再赘述。
+接口 16（辅助卡片翻译生成）复用同一套骨架，链路为单阶段：`transcribe(audio, zh) → zh(事件) → translate(zh, zh_to_en) → en(事件) → tts 流式 → audio_chunk×N → audio_end → done`，不再赘述。
+
+接口 19（消息按需翻译）为同步短链路，不走编排器：Router 查消息 → 已有 zh 直接返回（幂等，不调模型）；否则 `mllm.translate(en, en_to_zh)` → zh 写回 `messages.zh` 落库 → 返回 `{zh}`。
 
 ### 2.4 会话上下文管理
 
@@ -207,11 +236,13 @@ sequenceDiagram
 
 ```
 gateway/
-├── mllm.py      # MultimodalLLMClient（OpenAI 兼容 /v1/chat/completions）
-│   ├── reply_stream(audio, context) -> AsyncIterator[str]   # 5b 阶段A
-│   ├── audio_to_zh(audio) -> str                            # 5b 阶段B / 16
-│   ├── zh_to_en(zh) -> str                                  # 5b 阶段B / 16
-│   └── verify_semantic(audio, en) -> (bool, reason)         # 17
+├── mllm.py      # MLLMGateway（OpenAI 兼容 /v1/chat/completions）
+│   ├── reply_stream(persona, context, audio|text) -> AsyncIterator[str]  # 5a/5b 阶段A（流式）
+│   ├── reply_text(persona, context, text) -> str                         # 5a（非流式）
+│   ├── transcribe(audio, lang) -> str      # 音频→原文转录（lang: en|zh），16 / 17
+│   ├── translate(text, direction) -> str   # 纯文本翻译（direction: en_to_zh|zh_to_en），16 / 接口 19 按需翻译
+│   ├── transcribe_correct(audio) -> (raw, en)  # 5b 阶段B：转录+语法修正单次 JSON 结构化输出（原译/纠译）
+│   └── verify_semantic(audio, target_en) -> (bool, reason)  # 17：级联 transcribe(en) → JSON 判定两步
 ├── tts.py       # TTSClient（HTTP 调用本机 Kokoro 常驻服务）
 │   └── synthesize_stream(text) -> AsyncIterator[bytes]      # 分片流式
 ├── prompts.py   # 提示词加载器（prompts.yaml → 按任务注入）
@@ -221,10 +252,19 @@ gateway/
 - **多模态调用方式**：走 OpenAI 兼容 `/v1/chat/completions`（httpx / openai sdk），`base_url`（`http://127.0.0.1:8000/v1`）与模型名（`gemma-4-e4b-it-4bit`）走配置；音频以 **base64 wav** 随消息输入（上行原始 webm/ogg/mp4 先经 ffmpeg 转 wav，见 §2.6）；
 - **TTS 调用方式**：HTTP 调用本机 Kokoro 常驻服务，**不在 FastAPI 进程内加载模型**（进程隔离，见下文）。
 
+**多模态模型输出格式约定**（已验证事实，编排器/断句器均依赖）：
+
+- **输出默认为纯文本**：方法默认单一职责（转录/翻译/回复分离），提示词约束模型只输出目标语言文本，网关不做格式标记解析（例外为下述两处 JSON 结构化输出）；
+- **流式解析**：OpenAI 兼容 SSE（`data:` 行、`[DONE]` 结束），逐 chunk 取 `delta.content`；
+- **`reasoning_content` 回退**：Gemma 关思考（`chat_template_kwargs.enable_thinking=false`）后 `content` 可能为空，非流式与流式解析均按 `content → reasoning_content → ""` 回退；
+- **两处结构化输出**（均为正则提取首个 `{...}` + JSON 解析，失败降级不向前端抛错）：
+  - `verify_semantic` 判定步：模型输出 JSON `{"consistent": bool, "reason": str}`，解析失败按 `consistent=false` + 默认 reason 降级（与 api.md 接口 17 契约一致）；
+  - `transcribe_correct`（5b 阶段B）：模型输出 JSON `{"raw": 原始逐字转录, "en": 语法修正英文}`，解析失败降级 raw=en=模型原文（strip 后）并打 warning 日志。该方法为单次复合指令，是对"单一职责纯文本"规范的产品有意例外（见 §1.4）。
+
 **提示词配置管理**（提示词全部由产品侧配置，不依赖模型服务端配置）：
 
 - **角色人设 system prompt**：取 DB `contacts.persona_prompt`（可运营配置，见 §2.4 / §4.3）；
-- **任务型提示词**（回复生成规则、语音→中文翻译、中文→英文转换、语义校验判定）：集中在后端配置文件 `prompts.yaml`，gateway 启动时加载、按任务注入请求，**不写死在代码**，调整提示词无需改代码只需改配置重启。
+- **任务型提示词**（回复生成规则、转录+语法修正 JSON 输出、语音→中文翻译、中文→英文转换、语义校验判定、按需中英翻译）：集中在后端配置文件 `prompts.yaml`，gateway 启动时加载、按任务注入请求，**不写死在代码**，调整提示词无需改代码只需改配置重启。
 
 **Kokoro TTS 独立服务**：
 
@@ -237,9 +277,9 @@ gateway/
 | 关注点 | 策略 |
 |--------|------|
 | 超时 | 流式调用：首包超时 10s、包间空闲超时 30s；非流式调用整体 30s |
-| 重试 | 仅**非流式且幂等**的调用（audio_to_zh / zh_to_en / verify_semantic）失败重试 1 次；流式回复不重试（避免重复上屏） |
+| 重试 | 仅**非流式且幂等**的调用（transcribe / translate / transcribe_correct / verify_semantic）失败重试 1 次；流式回复不重试（避免重复上屏） |
 | 降级 | TTS 失败：5b 阶段A 已发文本保留，跳过剩余音频分片，`reply_end` 正常收尾且 `duration`/`url` 为 null（契约已约定）并在日志标记；接口 16 不降级（语音条是卡片核心产物），直接 `error` 后 `done`；LLM 失败：发 `error{code,message}` 后 `done`（协议约定 error 后直接 done） |
-| 厂商隔离 | Client 定义抽象方法，OpenAI 兼容实现为默认（对接当前本地服务）；未来更换模型/厂商（云 API 等）仅新增实现 + 配置切换 |
+| 厂商隔离 | Client 定义抽象方法，OpenAI 兼容实现为默认（对接当前本地服务）；开发期提供 `MLLM_PROVIDER`（`local | dashscope`）兼容开关，可临时切百炼 Qwen-Omni（OpenAI 兼容 compatible-mode），网关内部适配三处差异：① `input_audio.data` 加 `data:;base64,` 前缀；② 去 `chat_template_kwargs`（本地 Gemma 专用）改传 `modalities:["text"]`；③ Qwen-Omni 仅支持流式，非流式方法内部收流聚合，对上层透明；未来更换模型/厂商（云 API 等）仅新增实现 + 配置切换 |
 | 观测 | 每次调用记录：模型名、首包耗时、总耗时、输入输出 token / 音频秒数，structlog 输出 |
 
 ### 2.6 音频链路
@@ -275,6 +315,47 @@ gateway/
 - **为什么用游标而非页码**：消息持续追加的场景下页码会漂移（翻页间新消息插入导致重复/遗漏），`id < cursor` 的游标切片稳定且天然走索引；
 - **音频 URL 处理**：组装响应时对页内消息的 `user_audio_id`/`tts_audio_id` 关联 `audio_assets` 批量重签（生产 1h 时效签名 URL，见 §4.5），分页天然限制了单次重签数量（≤ limit×2 个对象）；
 - **不做 Redis 缓存**：该读路径低频（仅进页/上滑触发），且消息频繁追加易使缓存失效，直接走索引查询即可；与 §2.4 的 `chat:ctx` 缓存职责不同——后者供 LLM 组装上下文（固定最近 20 条，写时追加），本节是前端展示分页，两者互不复用。
+
+### 2.9 辅助卡片全链路时序（16/17 与 5b 衔接）
+
+语种分流由**前端本地模型**完成：判定为英文的语音直接送入接口 5b（后端多模态大模型直接识别并推理）；判定为中文的语音不发往 5b，弹出辅助卡片并进入接口 16/17 链路，复读通过语义校验后再送入 5b 进入正常发送链路：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant FE as 前端
+    participant CS as Chat编排服务
+    participant M as 多模态大模型
+    participant T as TTS大模型
+
+    U->>FE: 按住说话
+    FE->>FE: 前端本地模型语种判断
+    alt 英文（不进入辅助卡片）
+        FE->>CS: 语音直接送入接口 5b（后端多模态大模型直接识别并推理）
+    else 中文（进入辅助卡片，语音不发往 5b）
+        FE->>FE: 弹出辅助卡片
+        FE->>CS: 接口 16 POST /api/assist/translate（中文语音，SSE）
+        CS->>M: 中文语音 → 中文文本
+        CS-->>FE: zh（卡片显示中文）
+        CS->>M: 中文 → 英文文本
+        CS-->>FE: en（默认隐藏，可展开）
+        CS->>T: 英文文本（后端直接触发）
+        T-->>CS: 合成语音分片
+        CS-->>FE: audio_chunk × N → audio_end → done
+        FE->>FE: 语音条自动播放
+        U->>FE: 按住按钮复读英文
+        FE->>CS: 接口 17 POST /api/assist/verify（复读语音 + en）
+        CS->>M: 判断语音与文本语义一致性
+        alt consistent = true
+            CS-->>FE: { consistent: true }
+            FE->>FE: 完成辅助卡片逻辑（关闭卡片）
+            FE->>CS: 复读语音送入接口 5b（发送消息并获取回复）
+        else consistent = false
+            CS-->>FE: { consistent: false, reason }
+            FE->>FE: 清理录音，提示再次复读
+        end
+    end
+```
 
 ---
 
@@ -366,6 +447,7 @@ erDiagram
         enum from_role "them|me"
         text en
         text zh
+        text raw
         tinyint score
         bool text_only
         bigint user_audio_id FK
@@ -446,7 +528,7 @@ erDiagram
 | sort_order | int | DEFAULT 0 | 列表排序 |
 | enabled | tinyint(1) | DEFAULT 1 | 上下架 |
 
-**messages（接口 4 / 5a / 5b）**
+**messages（接口 4 / 5a / 5b / 19）**
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
@@ -454,8 +536,9 @@ erDiagram
 | user_id | varchar(32) | NOT NULL, FK | 会话归属用户 |
 | contact_id | varchar(32) | NOT NULL, FK | |
 | from_role | enum('them','me') | NOT NULL | api: `from` |
-| en | text | NOT NULL | 英文内容 |
-| zh | text | | 中文翻译 |
+| en | text | NOT NULL | 英文内容（我方语音消息为语法修正后英文，即"纠译"） |
+| zh | text | DEFAULT '' | 中文翻译（**按需生成**：接口 19 写回，未翻译为空串） |
+| raw | text | DEFAULT '' | 我方语音消息的原始逐字转录（"原译"，5b 阶段B 产出；api: `raw`，非空时返回） |
 | score | tinyint | NULL | 我方语音评分（历史功能字段） |
 | text_only | tinyint(1) | DEFAULT 0 | 纯文本消息（api: `textOnly`；5a 产生的消息为 1） |
 | user_audio_id | bigint | NULL, FK→audio_assets | 我方原声（api: `userAudio`） |
@@ -546,14 +629,14 @@ erDiagram
 
 ### 4.6 mock 状态 → 持久化映射
 
-衔接 api.md 附录"服务端状态说明"：
+mock 实现（`web/mock/plugin.ts`）中有 4 处内存状态，dev 服务重启即重置；真实后端按用户维度持久化：
 
-| mock 内存状态 | 持久化落点 |
-|---------------|-----------|
-| `chatReplyIdx`（脚本回复游标） | 取消——真实回复由 LLM 基于 `messages` 上下文生成，无脚本 |
-| `transcribeCount`（转写奇偶计数） | 取消——语种判断由前端本地模型完成，接口 6 真实后端不提供 |
-| `favorites` 数组 | `favorites` 表（用户 + en_hash 唯一） |
-| `picStoryProgress` 对象 | `pic_story_progress` 表（GREATEST 保最高分） |
+| 状态 | mock 位置 | 持久化落点 |
+|------|-----------|-----------|
+| 聊天回复进度 | `chatReplyIdx`（Map，每会话的脚本回复游标） | 取消——真实回复由 LLM 基于 `messages` 上下文生成，无脚本 |
+| 转写奇偶计数 | `transcribeCount`（仅为演示"中文→辅助"节奏） | 取消——语种判断由前端本地模型完成，接口 6 真实后端不提供 |
+| 收藏列表 | `favorites`（数组，id 自增） | `favorites` 表（用户 + en_hash 唯一） |
+| 讲述进度 | `picStoryProgress`（对象） | `pic_story_progress` 表（GREATEST 保最高分） |
 
 ---
 
@@ -633,5 +716,7 @@ location /api/ {
 | 15 | PUT /api/pic-story-progress | picstory | pic_story_progress |
 | 16 | POST /api/assist/translate（SSE） | assist | audio_assets, OSS；MLLM+TTS |
 | 17 | POST /api/assist/verify | assist | audio_assets（复读录音暂存）；MLLM |
+| 18 | DELETE /api/chats/{contactId}/messages | chat | messages, audio_assets（清空会话） |
+| 19 | POST /api/messages/{messageId}/translate | chat | messages（zh 写回，幂等）；MLLM |
 
 > 实现状态：本文档为架构设计标准，后端代码尚未实现；前端当前仍由 Vite mock（`web/mock/plugin.ts`）支撑。落地顺序建议：工程骨架与基础业务 CRUD → 对象存储与音频链路 → Model Gateway → 5b/16/17 流式编排。

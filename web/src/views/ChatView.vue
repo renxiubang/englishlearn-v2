@@ -24,6 +24,8 @@ interface LocalMessage {
   from: 'them' | 'me'
   en: string
   zh: string
+  /** me 语音消息：原始逐字转录（原译） */
+  raw?: string
   duration?: string
   score?: number
   textOnly?: boolean
@@ -191,25 +193,22 @@ async function sendVoice(rec: Pick<Recording, 'blob' | 'seconds'>, assist = fals
         case 'reply_end': {
           const ai = aiId != null ? byId(aiId) : undefined
           if (ai) {
-            ai.zh = String(data.zh ?? '')
             ai.duration = String(data.duration ?? '')
             if (typeof data.url === 'string') ai.url = data.url
           }
           scrollBottom()
           break
         }
-        case 'user_zh':
-          pendingMsg.zh = String(data.zh ?? '')
-          break
         case 'user_en':
           pendingMsg.en = String(data.en ?? '')
+          pendingMsg.raw = String(data.raw ?? '')
           break
         case 'user_bubble': {
           const b = data as unknown as UserBubblePayload
           Object.assign(pendingMsg, {
             id: b.id,
             en: b.en,
-            zh: b.zh,
+            raw: b.raw,
             userAudio: b.userAudio,
             ttsAudio: b.ttsAudio,
             duration: b.userAudio?.duration ?? pendingMsg.duration,
@@ -257,7 +256,7 @@ async function sendText() {
       id: reply.id,
       from: 'them',
       en: reply.en,
-      zh: reply.zh,
+      zh: reply.zh ?? '',
       textOnly: reply.textOnly,
       duration: reply.duration,
     })
@@ -314,6 +313,19 @@ async function onAssistFinish(payload: { count: number; rec: Recording | null; e
 // ---------- 收藏 ----------
 function onFavorite(payload: { en: string; zh: string; faved: boolean }) {
   favStore.toggle(payload.en, payload.zh, payload.faved)
+}
+
+// ---------- 按需翻译（接口 19） ----------
+/** 点击气泡"翻译"按钮：zh 未生成时调接口回填（落库供历史复用） */
+async function onTranslate(m: LocalMessage) {
+  // 已有译文或本地临时气泡（负 id，尚未落库）时跳过
+  if (m.zh || m.id < 0) return
+  try {
+    const { zh } = await chatApi.translateMessage(m.id)
+    m.zh = zh
+  } catch (e) {
+    toast(e instanceof Error ? e.message : '翻译失败')
+  }
 }
 
 // ---------- 菜单 / 附加功能面板 ----------
@@ -387,6 +399,7 @@ function plusAction(name: string) {
               :warn-on-translate="contact?.type === 'human'"
               :favorited="favStore.has(m.en)"
               @favorite="onFavorite"
+              @translate="onTranslate(m)"
             />
           </div>
           <!-- 我方消息 -->
@@ -395,6 +408,7 @@ function plusAction(name: string) {
               side="me"
               :en="m.en"
               :zh="m.zh"
+              :raw="m.raw"
               :duration="m.duration"
               :score="m.score"
               :text-only="m.textOnly"
@@ -403,6 +417,7 @@ function plusAction(name: string) {
               :tts-audio="m.ttsAudio"
               :favorited="favStore.has(m.en)"
               @favorite="onFavorite"
+              @translate="onTranslate(m)"
             />
           </div>
         </div>

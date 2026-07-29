@@ -42,6 +42,9 @@ export const chatApi = {
   /** 接口 18：清空聊天记录 */
   clearMessages: (contactId: string) =>
     http.delete<{ removed: number }>(`/chats/${contactId}/messages`),
+  /** 接口 19：消息中文翻译（按需生成，幂等） */
+  translateMessage: (id: number) =>
+    http.post<{ zh: string }>(`/messages/${id}/translate`),
 }
 
 // ---------- 语音（看图讲故事评分，仍走 mock） ----------

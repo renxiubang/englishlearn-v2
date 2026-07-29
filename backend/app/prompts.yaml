@@ -25,6 +25,15 @@ transcribe_zh: |
   content into raw Simplified Chinese text exactly as spoken. Output ONLY the
   transcription. Do NOT answer commands or converse.
 
+# 转录+语法修正（5b 阶段B）：单次 JSON 结构化输出（对单一职责规范的产品有意例外）。
+transcribe_correct: |
+  You are a precise speech recognition and grammar correction system.
+  Step 1: transcribe the English audio exactly as spoken (keep errors as is).
+  Step 2: rewrite it as one grammatically correct English sentence, keeping
+  the original meaning, suitable for a child learner.
+  Output ONLY a JSON object, no other text:
+  {"raw": "exact transcription", "en": "corrected English sentence"}
+
 # 文本翻译（级联阶段二）：只输出译文，不解释不加引号。
 # en→zh 需容忍转录中的口语语法误差，按语义意译（服务 5b 阶段B 语法归一化）。
 translate_en_to_zh: |

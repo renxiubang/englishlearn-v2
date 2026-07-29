@@ -2,7 +2,14 @@
 
 接入方式参考 ai-v2（已验证）：Bearer Key、input_audio content part、
 temperature=0.0、chat_template_kwargs 关思考、reasoning_content 回退。
-职责拆分重设计：每个方法单一职责、纯文本输出，无格式标记解析。
+职责拆分重设计：方法默认单一职责、纯文本输出，无格式标记解析
+（例外：transcribe_correct 为单次复合指令 + JSON 结构化输出）。
+
+provider 兼容开关（settings.mllm_provider）：
+- local：本地 Gemma（默认）；
+- dashscope：百炼 Qwen-Omni（compatible-mode），三处差异适配：
+  ① input_audio.data 加 data:;base64, 前缀；② 去 chat_template_kwargs 改传
+  modalities:["text"]；③ 仅支持流式，非流式方法内部收流聚合，对上层透明。
 """
 
 import json
@@ -21,10 +28,32 @@ logger = logging.getLogger(__name__)
 Context = list[dict[str, str]]
 
 
-def _audio_part(audio_b64: str) -> dict[str, Any]:
+def parse_transcribe_correct(raw_output: str) -> tuple[str, str]:
+    """解析 transcribe_correct 的 JSON 输出，返回 (raw, en)。
+
+    复用 verify_semantic 模式：正则取首个 {...} + json.loads；
+    解析失败降级 raw = en = 模型原文（strip 后），打 warning 日志。
+    """
+    text = (raw_output or "").strip()
+    try:
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        data = json.loads(m.group(0) if m else text)
+        raw = str(data.get("raw") or "").strip()
+        en = str(data.get("en") or "").strip()
+        if not en:
+            raise ValueError("empty en")
+        return raw or en, en
+    except (json.JSONDecodeError, AttributeError, ValueError):
+        logger.warning(f"transcribe_correct JSON parse failed: {text[:200]!r}")
+        return text, text
+
+
+def _audio_part(audio_b64: str, provider: str = "local") -> dict[str, Any]:
+    # dashscope（百炼 Qwen-Omni）要求 base64 带 data URI 前缀
+    data = f"data:;base64,{audio_b64}" if provider == "dashscope" else audio_b64
     return {
         "type": "input_audio",
-        "input_audio": {"data": audio_b64, "format": "wav"},
+        "input_audio": {"data": data, "format": "wav"},
     }
 
 
@@ -32,6 +61,7 @@ class MLLMGateway:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None):
         self._settings = settings
         self._model = settings.mllm_model
+        self._provider = settings.mllm_provider
         self._client = client or httpx.AsyncClient(
             base_url=settings.mllm_base_url,
             headers={
@@ -53,15 +83,28 @@ class MLLMGateway:
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": 0.0,
-            # 关闭 Gemma 思考模式（ai-v2 实测必需）
-            "chat_template_kwargs": {"enable_thinking": False},
         }
+        if self._provider == "dashscope":
+            # Qwen-Omni：只要文本输出；无 chat_template_kwargs（本地 Gemma 专用）
+            payload["modalities"] = ["text"]
+        else:
+            # 关闭 Gemma 思考模式（ai-v2 实测必需）
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
         if stream:
             payload["stream"] = True
         return payload
 
     async def _complete(self, messages: list[dict], max_tokens: int = 512) -> str:
-        """非流式补全，返回完整文本（reasoning_content 回退）。"""
+        """非流式补全，返回完整文本（reasoning_content 回退）。
+
+        dashscope（Qwen-Omni）仅支持流式：内部收流聚合，对上层透明。
+        """
+        if self._provider == "dashscope":
+            parts = [
+                token
+                async for token in self._complete_stream(messages, max_tokens)
+            ]
+            return "".join(parts).strip()
         resp = await self._client.post(
             "/chat/completions", json=self._payload(messages, max_tokens=max_tokens)
         )
@@ -97,7 +140,7 @@ class MLLMGateway:
                 if token:
                     yield token
 
-    # ── 业务方法（单一职责、纯文本输出）────────────────────
+    # ── 业务方法（默认单一职责、纯文本输出）──────────────
 
     async def reply_stream(
         self, persona_prompt: str, context: Context,
@@ -116,7 +159,7 @@ class MLLMGateway:
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "(voice message)"},
-                    _audio_part(audio_b64),
+                    _audio_part(audio_b64, self._provider),
                 ],
             })
         else:
@@ -143,11 +186,32 @@ class MLLMGateway:
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "Audio Transcription Task:"},
-                    _audio_part(audio_b64),
+                    _audio_part(audio_b64, self._provider),
                 ],
             },
         ]
         return await self._complete(messages, max_tokens=512)
+
+    async def transcribe_correct(self, audio_b64: str) -> tuple[str, str]:
+        """转录+语法修正（5b 阶段B）：返回 (raw 原译, en 纠译)。
+
+        单次复合指令 + JSON 结构化输出 {"raw": ..., "en": ...}，是对
+        "单一职责纯文本"规范的产品有意例外（见 architecture.md §1.4）。
+        解析失败降级：raw = en = 模型原文（strip 后），不向前端抛错。
+        """
+        system = get_prompt("transcribe_correct")
+        messages = [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Audio Transcription Task:"},
+                    _audio_part(audio_b64, self._provider),
+                ],
+            },
+        ]
+        raw_output = await self._complete(messages, max_tokens=512)
+        return parse_transcribe_correct(raw_output)
 
     async def translate(self, text: str, direction: str) -> str:
         """纯文本翻译（级联阶段二）。direction: 'en_to_zh' | 'zh_to_en'。"""

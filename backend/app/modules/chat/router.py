@@ -1,9 +1,10 @@
-"""聊天模块路由（api.md 接口 4 / 5a / 5b / 18）。
+"""聊天模块路由（api.md 接口 4 / 5a / 5b / 18 / 19）。
 
 POST /api/chats/{contactId}/messages 按 Content-Type 分流：
 - application/json → 5a 文本同步
 - multipart/form-data → 5b 语音 SSE 流式
 DELETE /api/chats/{contactId}/messages → 18 清空聊天记录
+POST /api/messages/{messageId}/translate → 19 消息中文翻译（按需生成）
 """
 
 import logging
@@ -93,20 +94,20 @@ async def send_message(
             await db.commit()
 
         reply_en = await mllm.reply_text(contact.persona_prompt, context, text)
-        reply_zh = await mllm.translate(reply_en, "en_to_zh") if reply_en else ""
 
         async with SessionLocal() as db:
             reply_msg = await repo.insert_message(
                 db, user_id=DEFAULT_USER_ID, contact_id=contact_id,
-                from_side="them", en=reply_en, zh=reply_zh, text_only=True,
+                from_side="them", en=reply_en, text_only=True,
             )
             await db.commit()
             reply_id = reply_msg.id
 
+        # zh 不再即时生成，经接口 19 按需翻译
         return ok({
             "reply": {
                 "id": reply_id, "from": "them",
-                "en": reply_en, "zh": reply_zh, "textOnly": True,
+                "en": reply_en, "textOnly": True,
             }
         })
 
@@ -182,3 +183,27 @@ async def clear_messages(
     for name in paths:
         speech.path_of(name).unlink(missing_ok=True)
     return ok({"removed": removed})
+
+
+@router.post("/messages/{message_id}/translate")
+async def translate_message(
+    message_id: int,
+    db: AsyncSession = Depends(get_db),
+    mllm: MLLMGateway = Depends(get_mllm),
+):
+    """接口 19：消息中文翻译（按需生成，幂等）。
+
+    已有 zh 直接返回不调模型；否则 translate(en→zh) 写回 messages.zh 落库。
+    """
+    msg = await db.get(repo.Message, message_id)
+    if not msg:
+        raise not_found("message not found")
+    if msg.zh:
+        return ok({"zh": msg.zh})
+    if not msg.en:
+        raise bad_request("message has no english text to translate")
+
+    zh = await mllm.translate(msg.en, "en_to_zh")
+    msg.zh = zh
+    await db.commit()
+    return ok({"zh": zh})
