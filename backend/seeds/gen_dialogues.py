@@ -1,7 +1,8 @@
 """AI 生成对话跟读语料：调用本地 MLLM 按主题批量生成对话写入 stories 表。
 
 每主题预置 5 个场景提示，逐场景生成 1 条（4-6 轮 A/B 对话，含中文对照），
-JSON 结构校验 + 单场景最多重试 3 次；同名标题跳过，可重复执行。
+JSON 结构校验 + 单场景最多重试 3 次。幂等按主题数量控制：每主题达到
+TARGET_PER_THEME 条即跳过（模型复跑会换标题，仅按标题去重拦不住）。
 用法：cd backend && uv run python seeds/gen_dialogues.py [--dry-run]
 """
 
@@ -23,6 +24,7 @@ logger = logging.getLogger("gen_dialogues")
 
 MODULE_TYPE = "dialogueRead"
 MAX_RETRIES = 3
+TARGET_PER_THEME = 6  # 1 条 seed.py 示例 + 5 条生成
 
 # 每主题 5 个场景提示：数量确定、题材不重复
 SCENARIOS: dict[str, list[str]] = {
@@ -132,6 +134,13 @@ async def main() -> None:
                     select(Story.title).where(Story.module_type == MODULE_TYPE)
                 )).all()
             )
+            counts = dict(
+                (await session.execute(
+                    select(Story.cat, func.count()).where(
+                        Story.module_type == MODULE_TYPE
+                    ).group_by(Story.cat)
+                )).all()
+            )
             next_order = (
                 await session.scalar(
                     select(func.max(Story.sort_order)).where(Story.module_type == MODULE_TYPE)
@@ -140,7 +149,11 @@ async def main() -> None:
 
             created = 0
             for theme, scenarios in SCENARIOS.items():
-                for scenario in scenarios:
+                need = TARGET_PER_THEME - counts.get(theme, 0)
+                if need <= 0:
+                    logger.info("[%s] 已有 %d 条，达标跳过", theme, counts.get(theme, 0))
+                    continue
+                for scenario in scenarios[:need]:
                     dialogue = await generate_one(gateway, theme, scenario, existing_titles)
                     if dialogue is None:
                         continue
